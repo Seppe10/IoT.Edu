@@ -1,0 +1,32 @@
+{
+  "description": "Pinned toolchain versions for IoT.Edu. Paths are resolved from environment variables, never from a developer home directory.",
+  "node": {
+    "version": "22.14.0",
+    "packageManager": "npm"
+  },
+  "esp-idf": {
+    "version": "v5.4.1",
+    "target": "esp32h2",
+    "pathEnv": "IDF_PATH",
+    "activateEnv": "IDF_ACTIVATE",
+    "hostNote": "This Phase 0 host installs ESP-IDF with Espressif EIM. IDF export.sh expects python_env/idf5.4_py3.10_env, which is absent. Use IDF_ACTIVATE pointing at activate_idf_v5.4.1.sh. A second checkout of v5.4.4 exists on the host and must not be used."
+  },
+  "esp-matter": {
+    "pathEnv": "ESP_MATTER_PATH",
+    "observedRevision": "2cb668c95de4f24786d20b7cb03c171d6e27b79e",
+    "connectedhomeipDescribe": "v1.4.2.0-1652-g8f943388af",
+    "note": "Revision observed on the Phase 0 host checkout. Original archive metadata recorded ESP_MATTER_PATH usage but not a git hash."
+  },
+  "python": {
+    "observed": "3.10.3"
+  },
+  "docker": {
+    "observedHostVersion": "29.4.3",
+    "mode": "not implemented in Phase 0"
+  },
+  "matterOtaImageTool": {
+    "relativeToMatterSdk": "src/app/ota_image_tool.py",
+    "createExample": "ota_image_tool.py create -v <vid> -p <pid> -vn <versionNumber> -vs <versionString> -da sha256 app.bin app.ota",
+    "inspectCommand": "ota_image_tool.py show image.ota"
+  }
+}

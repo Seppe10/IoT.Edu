@@ -1,0 +1,37 @@
+# Firmware / ESP-IDF
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+.vscode/
+.clangd/
+.DS_Store
+__MACOSX/
+backup/
+.env
+.env.local
+data/
+
+# Node
+node_modules/
+dist/
+coverage/
+*.log
+
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+
+# Local secrets and runtime
+*.pem
+*.key
+*.p12
+controller-storage/
+.matter/
+
+# Large generated logs
+docs/baseline-build.log
+reference/matter-dht11/managed_components/
+reference/matter-dht11/build/
