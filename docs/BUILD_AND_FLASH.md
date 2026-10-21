@@ -41,6 +41,14 @@ From zip `flasher_args.json`:
 
 Flash: ESP32-H2, DIO, 4MB, 48 MHz. Avoid full-chip erase by default. USB flashing of a live board is **Hardware verification pending**.
 
+## Desktop native build
+
+With `IDF_PATH`, `ESP_MATTER_PATH`, and `IDF_ACTIVATE` set, the local API accepts `mode: "native"` for the verified DHT11 package. It writes an isolated workspace under `DATA_DIR/builds/<id>/workspace`, compiles it through `scripts/idf_exec.sh`, and stores artifacts under `DATA_DIR/builds/<id>/artifacts`.
+
+The package contains the application image, bootloader, partition table, OTA data initialiser, merged USB image, Matter `.ota` image, `flasher_args.json`, sdkconfig, dependency lock, build log, and SHA-256 sums. `ota_image_tool.py create` and `show` supply the OTA header. The application `.bin` is not a Matter OTA image.
+
+Mock mode still writes `SIMULATED.txt` and refuses download as firmware. Docker mode is rejected. USB programming and Matter OTA transfer are not started by the builder.
+
 ## Matter OTA image
 
-Not produced by the original project (`CONFIG_CHIP_OTA_IMAGE_BUILD` unset). Later native builds must run `ota_image_tool.py create` and `show` from the Matter SDK. The application `.bin` is not an OTA image.
+The original reference project leaves `CONFIG_CHIP_OTA_IMAGE_BUILD` unset. Native packages create the `.ota` file after compilation with the pinned Matter SDK tool, using the same version number and string written into CMake and sdkconfig.

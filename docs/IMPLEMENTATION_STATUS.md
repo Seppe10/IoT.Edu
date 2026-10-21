@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-10-21 (Phase 2 modular DHT11 firmware compiled; hardware unverified).
+Last updated: 2026-10-21 (Phase 3 native firmware builder; hardware unverified).
 
 ## Phase 0 gate
 
@@ -105,24 +105,66 @@ npm run typecheck # passed for all six workspaces
 
 The Vite production bundle was produced during Phase 1 finalisation. Phase 2 did not change UI sources.
 
+## Phase 3
+
+**Met for a native ESP-IDF build started through the local API and shown in the Firmware Builder.** Mock mode remains. Docker mode is rejected. The reference tree and the committed component sources were not modified by the builds. `esp_bsp_generic` was investigated and left in place; see `docs/DECISIONS.md`.
+
+Two packages were compiled on 2026-10-21 with ESP-IDF v5.4.1. Both target ESP32-H2, keep the OTA Requestor, `CONFIG_MAX_FABRICS=5`, OpenThread, GPIO9 factory reset, DHT11 on GPIO4, the reference partition layout `8aec3f810b0c…`, and the reference dependency lock. Neither image was flashed or offered over Matter.
+
+| | SoftwareVersion 2 / `1.1.0` | SoftwareVersion 3 / `1.2.0` |
+|---|---|---|
+| Job | `15de6997-2cde-4bbc-b745-c9054b02f3c4` | `9fe1c617-a099-41d8-9dea-ad6b4f8c262f` |
+| Result | compiled | compiled |
+| Duration | 662 s | 729 s |
+| `sensors.bin` | 1,591,904 bytes | 1,591,904 bytes |
+| `sensors.bin` sha256 | `d79605ff4ec584b2fc34d85e0cb9a77d173ea6c71a237e7504232585a8862ae0` | `502860b5edbe7e38abe047f3813941eef35247186cf95a1068f569cf15d4bb25` |
+| App description | `sensors` `1.1.0` | `sensors` `1.2.0` |
+| Matter `.ota` | 1,591,985 bytes, VID 0xFFF1, PID 0x8000, version 2 / `1.1.0` | 1,591,985 bytes, VID 0xFFF1, PID 0x8000, version 3 / `1.2.0` |
+| OTA slot free | 374,176 bytes (19%) | 374,176 bytes (19%) |
+
+The application images are the same length because the version occupies a fixed field. Their hashes differ, and the OTA headers carry different version numbers and strings. The `.ota` digest matches the application image. The application `.bin` is not marked deployable. Only `sensors.ota` is.
+
+A GPIO9 request returned HTTP 400 with status `failed` and no artifacts. A simulated package stayed `SIMULATED.txt` and its download returned HTTP 409. After the API was stopped and started again on the same `DATA_DIR`, both compiled jobs were still `succeeded` / `compiled`.
+
+### Commands after the native builder landed
+
+```text
+npm test          # 31 vitest tests, all passed
+npm run typecheck # passed for all six workspaces
+```
+
+| Suite | Result |
+|---|---|
+| `@iotedu/contracts` (2) | Passed |
+| `@iotedu/catalog` (3) | Passed |
+| `@iotedu/firmware-builder` (12) | Passed |
+| `@iotedu/matter-controller` (1) | Passed |
+| `@iotedu/local-api` (12) | Passed |
+| `@iotedu/desktop-ui` (1) | Passed |
+| Typecheck, all workspaces | Passed |
+| Native package `1.1.0` | Compiled through the API |
+| Native package `1.2.0` | Compiled through the API |
+| Hardware | Not run |
+
 ## Hardware verification
 
-None. No USB flash, no live commissioning, no live SoftwareVersion read, no Matter OTA transfer, no GPIO9 reset, and no DHT11 reading has been observed from either image. Compilation does not satisfy `docs/HARDWARE_TEST_PLAN.md`.
+None. No USB flash, no live commissioning, no live SoftwareVersion read, no Matter OTA transfer, no GPIO9 reset, and no DHT11 reading has been observed. Compilation and a valid OTA header do not satisfy `docs/HARDWARE_TEST_PLAN.md`.
 
 ## Remaining limitations
 
-- The desktop firmware service still writes `SIMULATED.txt` and rejects native and Docker modes. The modular image is produced by the shell script.
-- No Matter `.ota` image (`CONFIG_CHIP_OTA_IMAGE_BUILD` unset on both builds).
+- Docker builds are unavailable.
+- The OTA Provider is not running, so a compiled `.ota` file still cannot be deployed. Preflight keeps unknown live checks blocking.
+- USB programming is not implemented. The merged image can be downloaded and has not been written to a board.
 - Test VID/PID and example DAC providers.
-- `esp_bsp_generic` still pulls the same unused LCD/LVGL components on both builds.
-- Unknown Kconfig symbol `ENABLE_WIFI_AP` in defaults (warning only, same on both builds).
-- Bluetooth commissioning, Thread dataset, USB flash, OTA Provider, and AI are not implemented.
-- `npm audit` originally reported 8 advisories. Same-major upgrades cleared Fastify, React Router, and Vite. Vitest 3.2.7 and its development dependencies `@vitest/mocker` and `tinypool` remain vulnerable; the published fix is Vitest 5, which was not applied. See `docs/DEPENDENCY_AUDIT.md`.
-- Figma pixel match is unverified. The nine screens follow the specification; no functional divergence from that screen list was found.
+- `esp_bsp_generic` still pulls the same unused LCD/LVGL components. The dependency lock was not changed.
+- Unknown Kconfig symbol `ENABLE_WIFI_AP` in defaults (warning only).
+- Bluetooth commissioning, Thread dataset, and AI are not implemented.
+- `npm audit` still reports Vitest 3.2.7, `@vitest/mocker`, and `tinypool`. The published fix is Vitest 5, which was not applied. See `docs/DEPENDENCY_AUDIT.md`.
+- Figma pixel match is unverified.
 - The IDE accessibility snapshot still omits some static table-cell names. Chrome’s accessibility tree exposes them after the table-cell display fix (`docs/DECISIONS.md`).
 
 ## Not started
 
-Phase 3 has not been started.
+Phase 4 has not been started.
 
-`docs/PHASE2_DATABASE.md` is a separate design note for a future PostgreSQL catalogue and GitHub client. The running application has no PostgreSQL client and no GitHub catalogue client. That note is not the modular firmware work recorded above.
+`docs/PHASE2_DATABASE.md` is a separate design note for a future PostgreSQL catalogue and GitHub client. The running application has no PostgreSQL client and no GitHub catalogue client.

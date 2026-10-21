@@ -1,6 +1,6 @@
 # Firmware integration
 
-**Phase 2: the verified ESP32-H2 Matter-over-Thread node now also builds as modular firmware. The reference tree is unchanged.**
+**Phase 3: the desktop native builder compiles the modular DHT11 package. The reference tree stays unchanged.**
 
 Working reference: `reference/matter-dht11/` (allowlisted sources only; not edited).
 

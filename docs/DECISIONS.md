@@ -131,6 +131,20 @@ The generator now copies `reference/matter-dht11/main/idf_component.yml` onto ge
 
 The reference sdkconfig still contains `CONFIG_SHTC3_I2C_SDA_PIN=4`, `CONFIG_SHTC3_I2C_SCL_PIN=5`, and `CONFIG_PIR_DATA_PIN=7` from `main/Kconfig.projbuild`. The DHT11 driver does not read them. Those symbols are absent from the modular sdkconfig. DHT11 data is `CONFIG_IOTEDU_DHT11_PIN=4`.
 
+## Phase 3
+
+### One version pair, written in every place that consumes it
+
+A native package sets CMake `PROJECT_VER` and `PROJECT_VER_NUMBER`, and the generated sdkconfig sets `CONFIG_APP_PROJECT_VER_FROM_CONFIG`, `CONFIG_APP_PROJECT_VER`, and `CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER` to the same pair. The Matter OTA header is then created with `ota_image_tool.py create` using that number and string, and `ota_image_tool.py show` is checked against the application description. The application `.bin` is not treated as an OTA image.
+
+### `esp_bsp_generic` stays
+
+Factory reset still calls `bsp_iot_button_create` from `esp_bsp_generic`, then `app_reset_button_register`. The button component supplies the callback API used inside `app_reset`, and it does not provide `bsp_iot_button_create`. Replacing the manifest would change the button construction path and the dependency lock. The lock remains the byte copy of `reference/matter-dht11/dependencies.lock`. A build that rewrites the lock is rejected.
+
+### One native build at a time
+
+Each package has its own workspace, and a second invocation of that workspace is refused. The API also runs only one native compile at a time so two Matter builds do not compete for the host. Mock packages can still be created while a native build is running.
+
 ### API source scan
 
 `apps/local-api/src/api.test.ts` scans `apps/` for flash, esptool, and subprocess usage. It previously also scanned `packages/`, which matched the comment that names `ota_image_tool.py` in the version-sdkconfig helper. The desktop and API sources are still the scan target. Mock artifacts remain `SIMULATED.txt` with `deployable: false`.

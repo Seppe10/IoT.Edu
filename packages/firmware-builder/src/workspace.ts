@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  applyCmakeProjectVersion,
   detectGpioConflicts,
   loadReferenceLayout,
   renderVersionSdkconfig,
@@ -71,9 +72,10 @@ export async function generateDht11Workspace(options: Dht11WorkspaceOptions): Pr
   if (!referenceCmake.includes(marker)) {
     throw new Error("Reference CMakeLists.txt no longer has the expected component list");
   }
-  const generatedCmake = referenceCmake.replace(
-    marker,
-    `${marker}\n    "${componentRoot}"`,
+  const generatedCmake = applyCmakeProjectVersion(
+    referenceCmake.replace(marker, `${marker}\n    "${componentRoot}"`),
+    softwareVersion,
+    softwareVersionString,
   );
 
   await rm(outDir, { recursive: true, force: true });

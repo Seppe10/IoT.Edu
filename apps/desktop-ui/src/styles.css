@@ -111,10 +111,23 @@ textarea { min-height: 90px; }
   font-size: 12px;
   background: #e7eeed;
 }
-.pill.simulated { background: #fff1cc; }
-.pill.failed, .pill.unknown { background: #f8d7d7; }
-.pill.passed { background: #d9f2e4; }
+.pill.simulated, .pill.running { background: #fff1cc; }
+.pill.compiled { background: #d9e8f8; }
+.pill.hardware_verified, .pill.passed { background: #d9f2e4; }
+.pill.failed, .pill.interrupted, .pill.unknown { background: #f8d7d7; }
 .pill.warning { background: #fff1cc; }
+.log {
+  max-height: 320px;
+  overflow: auto;
+  background: #10211f;
+  color: #e7f3f1;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+fieldset { border: 1px solid #c5d1cf; border-radius: 8px; }
+fieldset label { display: block; margin: 6px 0; }
 
 .checks { display: flex; flex-direction: column; gap: 8px; }
 .check { display: grid; grid-template-columns: 140px 1fr; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid #eef3f2; }

@@ -43,6 +43,25 @@ describe("DHT11 workspace generator", () => {
     expect(manifest).toBe(referenceManifest);
   });
 
+  it("writes a higher version into CMake and Kconfig together", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "iotedu-fw-"));
+    await generateDht11Workspace({
+      repoRoot,
+      outDir,
+      softwareVersion: 2,
+      softwareVersionString: "1.1.0",
+      dht11Gpio: 4,
+    });
+    const cmake = await readFile(path.join(outDir, "CMakeLists.txt"), "utf8");
+    const defaults = await readFile(path.join(outDir, "sdkconfig.defaults"), "utf8");
+    expect(cmake).toContain('set(PROJECT_VER "1.1.0")');
+    expect(cmake).toContain("set(PROJECT_VER_NUMBER 2)");
+    expect(cmake).not.toContain('set(PROJECT_VER "1.0")');
+    expect(defaults).toContain('CONFIG_APP_PROJECT_VER="1.1.0"');
+    expect(defaults).toContain("CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=2");
+    expect(defaults).toContain("CONFIG_APP_PROJECT_VER_FROM_CONFIG=y");
+  });
+
   it("refuses the factory-reset pin", async () => {
     const outDir = await mkdtemp(path.join(tmpdir(), "iotedu-fw-"));
     await expect(generateDht11Workspace({ repoRoot, outDir, dht11Gpio: 9 })).rejects.toThrow(/GPIO9/);

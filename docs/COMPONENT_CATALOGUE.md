@@ -13,7 +13,7 @@ Phase 1 stores the catalogue as read-only JSON under `catalog/manifests/`. `Loca
 | `iotedu-pir` | planned | no | none |
 | `iotedu-rgb` | planned | no | none |
 
-DHT11 stays **experimental**. The driver is an ESP-IDF component, `registerFunction` is `iotedu_dht11_register`, and `scripts/build_modular_dht11.sh` compiled it for ESP32-H2 on 2026-10-21. That compilation is not a hardware check, and the desktop app still rejects native and Docker build modes. A package created from the UI remains `SIMULATED.txt`. LDR, PIR, and RGB have no drivers and cannot be selected.
+DHT11 stays **experimental**. The driver is an ESP-IDF component and `registerFunction` is `iotedu_dht11_register`. The desktop can compile that package when the ESP-IDF v5.4.1 environment is configured. Compilation is not a hardware check, so the catalogue status is not verified. Simulated packages remain available and are not firmware images. LDR, PIR, and RGB have no drivers and cannot be selected. Docker builds are unavailable.
 
 ## Status vocabulary
 

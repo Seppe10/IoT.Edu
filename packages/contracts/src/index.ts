@@ -163,8 +163,16 @@ export const jobStatusSchema = z.enum([
   "failed",
   "succeeded",
   "interrupted",
+  "running",
 ]);
 export type JobStatus = z.infer<typeof jobStatusSchema>;
+
+export const firmwareVerificationSchema = z.enum([
+  "simulated",
+  "compiled",
+  "hardware_verified",
+]);
+export type FirmwareVerification = z.infer<typeof firmwareVerificationSchema>;
 
 export const buildArtifactSchema = z.object({
   name: z.string(),
@@ -179,12 +187,14 @@ export type BuildArtifact = z.infer<typeof buildArtifactSchema>;
 export const buildJobSchema = z.object({
   id: z.string(),
   simulated: z.boolean(),
+  verification: firmwareVerificationSchema.nullable(),
   status: jobStatusSchema,
   request: firmwareBuildRequestSchema,
   validation: validationResultSchema,
   logs: z.array(z.string()),
   artifacts: z.array(buildArtifactSchema),
   partitionLayoutId: z.string().nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

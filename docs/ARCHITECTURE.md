@@ -39,6 +39,7 @@ The browser never runs host OS commands. The local API owns subprocesses (IDF, e
 - Mock builds write `SIMULATED.txt` with `deployable: false` and do not invoke ESP-IDF.
 - `POST /api/ai/draft` returns 503 when no provider is configured.
 - Reference firmware under `reference/matter-dht11/` is the Phase 0 import and is left unmodified.
-- Phase 2 adds `firmware/components/iotedu_core` and `firmware/components/iotedu_dht11`. `scripts/build_modular_dht11.sh` generates a gitignored workspace and compiles it with ESP-IDF. The desktop `FirmwareBuildService` still returns mock packages and still rejects native and Docker modes.
+- Phase 2 adds `firmware/components/iotedu_core` and `firmware/components/iotedu_dht11`. `scripts/build_modular_dht11.sh` generates a gitignored workspace and compiles it with ESP-IDF.
+- Phase 3 connects the Firmware Builder to that pipeline. Mock mode remains for labelled simulations. Native mode generates an isolated workspace under `DATA_DIR`, runs ESP-IDF v5.4.1, and stores the application image, merged USB image, and Matter `.ota` image. Docker mode stays unavailable. A compiled package is not hardware-verified.
 
 Figma file `ctgVnYSDl6CAmnc2sXTfKk` could not be read (no edit access on the Figma MCP session). Screen structure follows the specification’s nine management screens. Pixel match to the wireframes is unverified.

@@ -12,11 +12,11 @@ import {
   type BuildJob,
   type OtaJob,
 } from "@iotedu/contracts";
-import { loadReferenceLayout, type BoardProfile } from "@iotedu/firmware-builder";
+import { inspectToolchain, loadReferenceLayout, type BoardProfile } from "@iotedu/firmware-builder";
 import { MockMatterManagementService } from "@iotedu/matter-controller";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
-import { LocalFirmwareBuildService, LocalOtaService } from "./services.js";
+import { LocalFirmwareBuildService, LocalOtaService, type NativeRunner } from "./services.js";
 import { JsonJobRepository, JsonNodeRepository, appendAudit, redact } from "./store.js";
 
 const ALLOWED_ORIGINS = new Set([
@@ -31,6 +31,8 @@ export interface AppPaths {
   repoRoot: string;
   catalogDir: string;
   profile: BoardProfile;
+  nativeAvailable?: boolean;
+  runNative?: NativeRunner;
 }
 
 export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
@@ -38,8 +40,15 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
   const builds = new JsonJobRepository<BuildJob>(path.join(paths.dataDir, "builds.json"));
   const otas = new JsonJobRepository<OtaJob>(path.join(paths.dataDir, "ota-jobs.json"));
   const catalog = new LocalCatalogRepository(paths.catalogDir, paths.repoRoot);
+  const toolchain = await inspectToolchain();
+  const nativeAvailable = paths.nativeAvailable ?? toolchain.nativeAvailable;
   const matter = new MockMatterManagementService(nodes);
-  const firmware = new LocalFirmwareBuildService(catalog, builds, paths.dataDir, paths.repoRoot, paths.profile);
+  const firmware = new LocalFirmwareBuildService(catalog, builds, paths.dataDir, paths.repoRoot, paths.profile, {
+    nodes,
+    nativeAvailable,
+    runNative: paths.runNative,
+  });
+  await firmware.recoverInterrupted();
   const ota = new LocalOtaService(builds, otas, nodes, paths.profile, paths.repoRoot);
   const auditFile = path.join(paths.dataDir, "audit.jsonl");
 
@@ -63,7 +72,17 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
   });
 
   app.get("/api/health", async () => ({ ok: true, bind: "127.0.0.1" }));
-  app.get("/api/capabilities", async () => matter.getCapabilities());
+  app.get("/api/capabilities", async () => {
+    const report = await matter.getCapabilities();
+    if (nativeAvailable) {
+      report.firmwareBuild = "available";
+      report.notes = [
+        ...report.notes,
+        "Native firmware compilation is available. A compiled package is not hardware-verified.",
+      ];
+    }
+    return report;
+  });
 
   app.get("/api/nodes", async () => ({ nodes: await nodes.list() }));
   app.get("/api/nodes/:id", async (request, reply) => {
@@ -131,7 +150,25 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     const body = firmwareBuildRequestSchema.parse(request.body);
     const job = await firmware.build(body);
     await appendAudit(auditFile, { action: "build", id: job.id, status: job.status, simulated: job.simulated });
-    return reply.code(job.status === "failed" ? 400 : 201).send({ job });
+    if (job.status === "failed") {
+      const message = job.validation.issues.find((issue) => issue.level === "error")?.message
+        ?? job.logs.at(-1)
+        ?? "Build rejected";
+      return reply.code(400).send({ job, error: { code: "build_rejected", message } });
+    }
+    return reply.code(job.status === "running" ? 202 : 201).send({ job });
+  });
+  app.post("/api/builds/:id/cancel", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const job = await firmware.cancel(id);
+    if (!job) return reply.code(404).send({ error: { code: "not_found", message: "Build not found" } });
+    return { job };
+  });
+  app.get("/api/builds/:id/log", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const log = await firmware.readLog(id);
+    if (!log) return reply.code(404).send({ error: { code: "not_found", message: "Build not found" } });
+    return log;
   });
   app.get("/api/builds", async () => ({ jobs: await firmware.list() }));
   app.get("/api/builds/:id", async (request, reply) => {
@@ -144,7 +181,33 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     const { id } = request.params as { id: string };
     const job = await firmware.get(id);
     if (!job) return reply.code(404).send({ error: { code: "not_found", message: "Build not found" } });
-    return { artifacts: job.artifacts, simulated: job.simulated };
+    return { artifacts: job.artifacts, simulated: job.simulated, verification: job.verification };
+  });
+  app.get("/api/builds/:id/download/:name", async (request, reply) => {
+    const { id, name } = request.params as { id: string; name: string };
+    const job = await firmware.get(id);
+    if (!job) return reply.code(404).send({ error: { code: "not_found", message: "Build not found" } });
+    const safeName = path.basename(name);
+    const artifact = safeName === name ? job.artifacts.find((item) => item.name === safeName) : undefined;
+    if (!artifact) return reply.code(404).send({ error: { code: "not_found", message: "Artifact not found" } });
+    if (artifact.simulated || job.simulated || job.verification === "simulated") {
+      return reply.code(409).send({
+        error: { code: "simulated_artifact", message: "Simulated packages cannot be downloaded as firmware." },
+      });
+    }
+    const diagnostic = safeName === "build.log" || safeName === "sdkconfig";
+    if (job.status !== "succeeded" && !diagnostic) {
+      return reply.code(409).send({
+        error: { code: "build_not_successful", message: "Only a successful build can be downloaded as firmware." },
+      });
+    }
+    const root = path.resolve(paths.dataDir);
+    const absolute = path.resolve(root, artifact.relativePath);
+    if (!absolute.startsWith(`${root}${path.sep}`)) {
+      return reply.code(400).send({ error: { code: "rejected_path", message: "Artifact path is outside the data directory." } });
+    }
+    const bytes = await readFile(absolute);
+    return reply.header("content-disposition", `attachment; filename="${safeName}"`).type("application/octet-stream").send(bytes);
   });
 
   app.post("/api/uploads", async (request, reply) => {
@@ -204,16 +267,19 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
   app.get("/api/settings", async () => ({
     applicationVersion: "0.1.0",
     dataDir: paths.dataDir,
-    buildMode: "mock_only" as const,
+    buildMode: nativeAvailable ? "native" : "mock_only",
     expectedIdfVersion: "v5.4.1",
-    idfPathConfigured: Boolean(process.env.IDF_PATH),
-    espMatterPathConfigured: Boolean(process.env.ESP_MATTER_PATH),
-    toolchainProbed: false,
+    idfPathConfigured: toolchain.idfPathConfigured,
+    espMatterPathConfigured: toolchain.espMatterPathConfigured,
+    toolchainProbed: true,
     dockerProbed: false,
     controllerIdentityLoaded: false,
     fabricLabel: "IoT.Edu Management",
     notes: [
-      "Toolchain paths are read from the environment when a native build is added. This API does not probe them yet.",
+      nativeAvailable
+        ? "Native builds use the configured ESP-IDF v5.4.1 environment. Docker remains unavailable."
+        : "Native builds need IDF_PATH, ESP_MATTER_PATH, and IDF_ACTIVATE. Mock packages remain available.",
+      "A compiled package is not hardware-verified. USB programming and Matter OTA deployment stay disabled.",
       "No Matter controller identity exists. A missing credential file is not replaced automatically.",
     ],
   }));

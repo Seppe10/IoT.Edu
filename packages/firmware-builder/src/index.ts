@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ComponentManifest, ValidationIssue } from "@iotedu/contracts";
 
@@ -174,14 +174,207 @@ export function selectionIssues(
       });
     }
   }
-  if (mode === "native" || mode === "docker") {
+  if (mode === "docker") {
     issues.push({
       level: "error",
       code: "toolchain_mode_unavailable",
-      message: `${mode} builds are not available in this release. Use mock mode for a simulated package only.`,
+      message: "Docker builds are not available. Native builds use the local ESP-IDF v5.4.1 environment when it is configured.",
     });
   }
   return issues;
+}
+
+export function versionSupersedes(candidate: number, installed: number): boolean {
+  return Number.isInteger(candidate) && Number.isInteger(installed) && candidate > installed;
+}
+
+export function applyCmakeProjectVersion(cmake: string, versionNumber: number, versionString: string): string {
+  renderVersionSdkconfig(versionNumber, versionString);
+  if (!cmake.includes('set(PROJECT_VER "') || !cmake.includes("set(PROJECT_VER_NUMBER ")) {
+    throw new Error("Reference CMake version fields were not found");
+  }
+  return cmake
+    .replace(/set\(PROJECT_VER "[^"]*"\)/, `set(PROJECT_VER "${versionString}")`)
+    .replace(/set\(PROJECT_VER_NUMBER \d+\)/, `set(PROJECT_VER_NUMBER ${versionNumber})`);
+}
+
+export interface AppDescription {
+  version: string;
+  project: string;
+  idf: string;
+}
+
+export function readAppDescription(binary: Buffer): AppDescription {
+  const magic = Buffer.from([0x32, 0x54, 0xcd, 0xab]);
+  const offset = binary.indexOf(magic);
+  if (offset < 0) throw new Error("Application description magic was not found in the firmware image");
+  const field = (start: number, length: number) =>
+    binary.subarray(offset + start, offset + start + length).toString("utf8").split("\0")[0] ?? "";
+  return {
+    version: field(16, 32),
+    project: field(48, 32),
+    idf: field(112, 32),
+  };
+}
+
+export interface OtaHeaderInfo {
+  vendorId: number;
+  productId: number;
+  version: number;
+  versionString: string;
+}
+
+export function parseOtaShow(text: string): OtaHeaderInfo {
+  if (!/Magic:\s*1beef11e/i.test(text)) {
+    throw new Error("OTA show output does not contain the Matter image magic");
+  }
+  const vendor = text.match(/Vendor Id:\s*(\d+)/);
+  const product = text.match(/Product Id:\s*(\d+)/);
+  const version = text.match(/\n\s*\[\d+\] Version:\s*(\d+)/);
+  const versionString = text.match(/Version String:\s*(.+)/);
+  if (!vendor?.[1] || !product?.[1] || !version?.[1] || !versionString?.[1]) {
+    throw new Error("OTA show output is missing vendor, product, or version fields");
+  }
+  return {
+    vendorId: Number(vendor[1]),
+    productId: Number(product[1]),
+    version: Number(version[1]),
+    versionString: versionString[1].trim(),
+  };
+}
+
+export function sdkconfigValue(sdkconfig: string, key: string): string | null {
+  const match = sdkconfig.match(new RegExp(`^${key}=(.*)$`, "m"));
+  if (!match?.[1]) return null;
+  return match[1].replace(/^"(.*)"$/, "$1");
+}
+
+export function firmwareCompatibilityIssues(input: {
+  sdkconfig: string;
+  layoutId: string;
+  expectedLayoutId: string;
+  softwareVersion: number;
+  softwareVersionString: string;
+  dht11Gpio: number;
+  appBytes: number;
+  slotBytes: number;
+  appVersion: string;
+  appProject: string;
+  ota: OtaHeaderInfo | null;
+  vendorId: number;
+  productId: number;
+  dependencyLockMatchesReference: boolean;
+}): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const expect = (key: string, value: string, code: string, message: string) => {
+    if (sdkconfigValue(input.sdkconfig, key) !== value) {
+      issues.push({ level: "error", code, message });
+    }
+  };
+  expect("CONFIG_IDF_TARGET", "esp32h2", "target_mismatch", "Compiled target is not ESP32-H2");
+  expect("CONFIG_ENABLE_OTA_REQUESTOR", "y", "ota_requestor_disabled", "OTA Requestor is not enabled");
+  expect("CONFIG_MAX_FABRICS", "5", "multi_fabric_disabled", "Multi-fabric support is not the reference maximum of 5");
+  expect("CONFIG_OPENTHREAD_ENABLED", "y", "openthread_disabled", "OpenThread is not enabled");
+  expect(
+    "CONFIG_IOTEDU_DHT11_PIN",
+    String(input.dht11Gpio),
+    "dht11_pin_mismatch",
+    `Compiled DHT11 pin does not match GPIO${input.dht11Gpio}`,
+  );
+  expect(
+    "CONFIG_APP_PROJECT_VER_FROM_CONFIG",
+    "y",
+    "version_source_mismatch",
+    "Application version is not taken from the generated version pair",
+  );
+  expect(
+    "CONFIG_APP_PROJECT_VER",
+    input.softwareVersionString,
+    "version_string_mismatch",
+    `Application version string is not ${input.softwareVersionString}`,
+  );
+  expect(
+    "CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER",
+    String(input.softwareVersion),
+    "version_number_mismatch",
+    `Matter software version number is not ${input.softwareVersion}`,
+  );
+  if (input.layoutId !== input.expectedLayoutId) {
+    issues.push({
+      level: "error",
+      code: "partition_layout_mismatch",
+      message: "Partition layout does not match the reference ESP32-H2 table",
+    });
+  }
+  if (!input.dependencyLockMatchesReference) {
+    issues.push({
+      level: "error",
+      code: "dependency_lock_changed",
+      message: "The component manager changed dependencies.lock. The reference lock was not updated.",
+    });
+  }
+  issues.push(...appFitsPartition(input.appBytes, input.slotBytes));
+  if (input.appVersion !== input.softwareVersionString || input.appProject !== "sensors") {
+    issues.push({
+      level: "error",
+      code: "app_description_mismatch",
+      message: `Application description is ${input.appProject} ${input.appVersion}, expected sensors ${input.softwareVersionString}`,
+    });
+  }
+  if (!input.ota) {
+    issues.push({
+      level: "error",
+      code: "matter_ota_missing",
+      message: "The Matter OTA image was not produced",
+    });
+  } else if (
+    input.ota.vendorId !== input.vendorId ||
+    input.ota.productId !== input.productId ||
+    input.ota.version !== input.softwareVersion ||
+    input.ota.versionString !== input.softwareVersionString
+  ) {
+    issues.push({
+      level: "error",
+      code: "ota_header_mismatch",
+      message: `OTA header ${input.ota.vendorId}/${input.ota.productId} ${input.ota.version} ${input.ota.versionString} does not match the compiled firmware`,
+    });
+  }
+  if (input.vendorId !== 0xfff1 || input.productId !== 0x8000) {
+    issues.push({
+      level: "error",
+      code: "identity_mismatch",
+      message: "Vendor and product identifiers are not the verified test VID 0xFFF1 and PID 0x8000",
+    });
+  }
+  return issues;
+}
+
+export interface ToolchainInspection {
+  nativeAvailable: boolean;
+  idfPathConfigured: boolean;
+  espMatterPathConfigured: boolean;
+  activateConfigured: boolean;
+}
+
+export async function inspectToolchain(env: NodeJS.ProcessEnv = process.env): Promise<ToolchainInspection> {
+  async function exists(file: string | undefined): Promise<boolean> {
+    if (!file) return false;
+    try {
+      await access(file);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const idfPathConfigured = await exists(env.IDF_PATH ? path.join(env.IDF_PATH, "tools", "idf.py") : undefined);
+  const espMatterPathConfigured = await exists(env.ESP_MATTER_PATH ? path.join(env.ESP_MATTER_PATH, "components") : undefined);
+  const activateConfigured = await exists(env.IDF_ACTIVATE);
+  return {
+    nativeAvailable: idfPathConfigured && espMatterPathConfigured && activateConfigured,
+    idfPathConfigured,
+    espMatterPathConfigured,
+    activateConfigured,
+  };
 }
 
 export function appFitsPartition(appBytes: number, slotBytes: number): ValidationIssue[] {
