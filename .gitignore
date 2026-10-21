@@ -33,5 +33,7 @@ controller-storage/
 
 # Large generated logs
 docs/baseline-build.log
+docs/modular-build.log
 reference/matter-dht11/managed_components/
 reference/matter-dht11/build/
+firmware/out/

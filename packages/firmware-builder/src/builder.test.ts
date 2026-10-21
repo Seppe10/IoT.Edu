@@ -67,6 +67,7 @@ describe("firmware checks", () => {
 
   it("injects one aligned version snippet", () => {
     const text = renderVersionSdkconfig(2, "1.1");
+    expect(text).toContain('CONFIG_APP_PROJECT_VER="1.1"');
     expect(text).toContain("CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=2");
     expect(text).toContain('set(PROJECT_VER "1.1")');
     expect(text).toContain("set(PROJECT_VER_NUMBER 2)");

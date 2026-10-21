@@ -6,14 +6,14 @@ Phase 1 stores the catalogue as read-only JSON under `catalog/manifests/`. `Loca
 
 | Id | Status | Selectable | Source |
 |---|---|---|---|
-| `iotedu-core` | experimental | yes (base firmware) | `reference/matter-dht11` |
-| `iotedu-dht11` | experimental | yes, mock packages only | `reference/matter-dht11/main/drivers` |
+| `iotedu-core` | experimental | yes (base firmware) | `firmware/components/iotedu_core` (`iotedu_core_prepare`) |
+| `iotedu-dht11` | experimental | yes, mock packages only | `firmware/components/iotedu_dht11` (`iotedu_dht11_register`) |
 | `iotedu-endpoint-templates` | template | no | none |
 | `iotedu-ldr` | planned | no | none |
 | `iotedu-pir` | planned | no | none |
 | `iotedu-rgb` | planned | no | none |
 
-DHT11 stays **experimental**. The driver exists in the audited sources and the Phase 0 baseline compiled the original project, but `registerFunction` is null, so a native modular build is rejected. LDR, PIR, and RGB have no drivers and cannot be selected.
+DHT11 stays **experimental**. The driver is an ESP-IDF component, `registerFunction` is `iotedu_dht11_register`, and `scripts/build_modular_dht11.sh` compiled it for ESP32-H2 on 2026-10-21. That compilation is not a hardware check, and the desktop app still rejects native and Docker build modes. A package created from the UI remains `SIMULATED.txt`. LDR, PIR, and RGB have no drivers and cannot be selected.
 
 ## Status vocabulary
 

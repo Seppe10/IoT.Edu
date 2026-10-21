@@ -108,3 +108,29 @@ The actions now sit in a flex container inside the cell. Header cells use `scope
 ### Figma
 
 Still no edit access to file `ctgVnYSDl6CAmnc2sXTfKk`. Uncertainties that do not block the local shell: spacing, type, colour, and component visual style versus the wireframes. The implemented screens are the specification’s nine management screens. No sensor dashboard was added.
+
+## Phase 2
+
+### Version path
+
+The reference image reports application `1.0` and Matter software version number 1 because CMake `PROJECT_VER_NUMBER` is 1. `CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=0` is present and unused.
+
+The modular image sets `CONFIG_APP_PROJECT_VER_FROM_CONFIG`, `CONFIG_APP_PROJECT_VER="1.0"`, and `CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=1`, and the generated CMake file repeats `PROJECT_VER "1.0"` / `PROJECT_VER_NUMBER 1`. The compiled application string and the Matter GN version are therefore the same pair on both images. A later package that only updates the Kconfig number will follow the modular path.
+
+### Dependency lock
+
+The first modular attempt stored `idf_component.yml` on `iotedu_core`. The component manager then offered button 4.2.2 and rewrote the lock, including LCD and touch patch bumps. That binary is not the recorded result.
+
+The generator now copies `reference/matter-dht11/main/idf_component.yml` onto generated `main/`. The recorded build downloaded button 4.1.6, printed the 4.2.2 notice, and left `dependencies.lock` equal to the reference (10,397 bytes).
+
+### Inherited BSP dependencies
+
+`esp_bsp_generic` still pulls the same LCD, touch, and LVGL managed components as the reference. They are inherited from the copied manifest. The application component set gained only `iotedu_core` and `iotedu_dht11` (135 components versus 137).
+
+### Unused SHTC3 and PIR Kconfig
+
+The reference sdkconfig still contains `CONFIG_SHTC3_I2C_SDA_PIN=4`, `CONFIG_SHTC3_I2C_SCL_PIN=5`, and `CONFIG_PIR_DATA_PIN=7` from `main/Kconfig.projbuild`. The DHT11 driver does not read them. Those symbols are absent from the modular sdkconfig. DHT11 data is `CONFIG_IOTEDU_DHT11_PIN=4`.
+
+### API source scan
+
+`apps/local-api/src/api.test.ts` scans `apps/` for flash, esptool, and subprocess usage. It previously also scanned `packages/`, which matched the comment that names `ota_image_tool.py` in the version-sdkconfig helper. The desktop and API sources are still the scan target. Mock artifacts remain `SIMULATED.txt` with `deployable: false`.

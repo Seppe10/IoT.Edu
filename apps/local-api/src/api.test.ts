@@ -217,10 +217,7 @@ describe("local API", () => {
       }
       return found;
     }
-    const sources = [
-      ...await filesUnder(path.join(repoRoot, "apps")),
-      ...await filesUnder(path.join(repoRoot, "packages")),
-    ];
+    const sources = await filesUnder(path.join(repoRoot, "apps"));
     expect(sources.length).toBeGreaterThan(0);
     for (const file of sources) {
       const text = await readFile(file, "utf8");

@@ -1,7 +1,7 @@
 {
   "id": "iotedu-dht11",
   "name": "DHT11 Driver",
-  "description": "Single-wire DHT11 temperature and humidity driver from the audited reference firmware. It publishes Matter TemperatureMeasurement and RelativeHumidityMeasurement. The desktop app does not display those readings. Modular registration is not extracted yet, so this entry can be selected only for a simulated package.",
+  "description": "Single-wire DHT11 temperature and humidity driver. iotedu_dht11_register creates the Matter temperature and humidity endpoints. The desktop app does not display those readings. Native compilation from the desktop is still unavailable.",
   "type": "sensor",
   "version": "1.0.0",
   "status": "experimental",
@@ -10,8 +10,8 @@
   "idfCompatibility": ">=5.4.1 <5.5",
   "selectableForBuild": true,
   "firmware": {
-    "idfComponentDir": "reference/matter-dht11/main/drivers",
-    "registerFunction": null,
+    "idfComponentDir": "firmware/components/iotedu_dht11",
+    "registerFunction": "iotedu_dht11_register",
     "requires": [],
     "kconfig": [
       {

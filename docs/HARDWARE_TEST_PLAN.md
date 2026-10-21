@@ -1,10 +1,10 @@
 # Hardware test plan
 
-No hardware evidence has been collected in this repository. Every item is **pending**.
+No hardware evidence has been collected in this repository. Every item is **pending**. Compiling the reference image and the modular DHT11 image on 2026-10-21 does not complete any item below.
 
 ## Board
 
-ESP32-H2 (DevKitM-1 assumed from GPIO9 BOOT button overlay). DHT11 data on GPIO4.
+ESP32-H2 (DevKitM-1 assumed from GPIO9 BOOT button overlay). DHT11 data on GPIO4. The modular firmware reads that pin from `CONFIG_IOTEDU_DHT11_PIN`, whose default is 4.
 
 ## Checklist
 
