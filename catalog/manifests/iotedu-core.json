@@ -1,0 +1,28 @@
+{
+  "id": "iotedu-core",
+  "name": "Matter over Thread core",
+  "description": "Baseline ESP32-H2 Matter-over-Thread project imported from matter-dht11 and compiled in Phase 0. It is the base firmware for a package. It is not a drop-in modular component yet.",
+  "type": "core",
+  "version": "1.0.0",
+  "status": "experimental",
+  "source": "local",
+  "target": "esp32h2",
+  "idfCompatibility": ">=5.4.1 <5.5",
+  "selectableForBuild": true,
+  "firmware": {
+    "idfComponentDir": "reference/matter-dht11",
+    "registerFunction": null,
+    "requires": [],
+    "kconfig": [],
+    "matter": {
+      "endpoints": ["root"],
+      "clusters": [
+        "BasicInformation",
+        "Descriptor",
+        "OperationalCredentials",
+        "AdministratorCommissioning",
+        "OtaSoftwareUpdateRequestor"
+      ]
+    }
+  }
+}

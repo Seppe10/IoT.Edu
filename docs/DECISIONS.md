@@ -1,6 +1,6 @@
 # Decisions and discrepancies
 
-Phase 0 only. Nothing below is a claim that later phases are complete.
+Phase 0 decisions stay in force. Phase 1 notes are appended below and do not change the firmware audit.
 
 ## Order of precedence applied
 
@@ -8,7 +8,7 @@ Phase 0 only. Nothing below is a claim that later phases are complete.
 2. Pinned ESP-IDF v5.4.1 / host esp-matter checkout APIs.
 3. Standalone implementation specification.
 4. Addendum A: **not found as a file** in the workspace. Items attributed to it were taken from the specification text.
-5. Figma: not used in Phase 0 (no UI yet).
+5. Figma: used for screen list only. The file could not be opened. See Phase 1 below.
 
 ## Confirmed discrepancies
 
@@ -68,9 +68,43 @@ GN configure then failed until `_PW_ACTUAL_ENVIRONMENT_ROOT` pointed at that `.e
 
 This host’s `sensors.bin` is 1,591,552 bytes — the same size as `matter-dht11/build/sensors.bin` in the zip. That is size equality, not a byte-for-byte hash comparison.
 
+## Phase 1
+
+### Figma wireframes were not readable
+
+`create_session` and `get_metadata` on file `ctgVnYSDl6CAmnc2sXTfKk` failed with no edit access. The desktop UI follows the specification’s nine screens (overview, pair, node details, library, builder, AI draft, OTA preflight, deployment record, settings). Layout, type, and colour were not checked against the frames.
+
+### Mock boundaries
+
+- Commissioning writes a local simulated node. `matterNodeId`, VID, PID, software version, and reachability stay null. No controller identity is created.
+- Firmware packages in this phase are `SIMULATED.txt` records. Native and Docker modes return `toolchain_mode_unavailable`. ESP-IDF is not invoked.
+- OTA preflight treats an unknown mandatory check as blocking. A simulated artifact fails the deployable-image check. The saved job is `blocked`, every stage is `not_observed`, and the node version is unchanged.
+- AI drafts return HTTP 503. The rest of the app keeps working.
+
+### Empty JSON body on maintenance actions
+
+`POST /api/nodes/:id/refresh` and `POST /api/nodes/:id/commissioning-window` send no body. The UI was setting `Content-Type: application/json` anyway, and Fastify rejected the empty body. The client now sets that header only when a body is present.
+
+### Blocked OTA save
+
+`POST /api/ota/jobs` returns 409 with the job when preflight is not allowed. The preflight screen treats a `blocked` job as a saved record and does not also paint it as a request failure.
+
 ## Remaining issues
 
 - Addendum A file still missing.
 - Live SoftwareVersion on a board is unknown (expected 1 / `"1.0"` from CMake, not Kconfig 0).
 - Host `esp-matter` git hash is not proven identical to the original author’s checkout.
 - No board has been USB-flashed from this repository.
+- Figma frames were not compared.
+- `npm audit` still reports Vitest development advisories. The fix is Vitest 5, a major upgrade, and was not forced. See `docs/DEPENDENCY_AUDIT.md`.
+- The IDE snapshot can still omit static cell names. The browser accessibility tree includes them.
+
+### Table cells missing from the accessibility tree
+
+The node-list action cell used `class="row"`, and `.row` sets `display: flex`. A table cell with a non-table `display` leaves the table formatting context. Chrome then dropped that row’s cells from the accessibility tree, which is why the snapshot showed the action links and not the node name, hardware, firmware, or reachability.
+
+The actions now sit in a flex container inside the cell. Header cells use `scope`. Each table has a caption. After the change, the accessibility tree for the overview contains the table, caption, column headers, row headers, and cells, including “Bench H2 renamed” and “Not read”. Computed `display` on the settings header and value cells is `table-cell`.
+
+### Figma
+
+Still no edit access to file `ctgVnYSDl6CAmnc2sXTfKk`. Uncertainties that do not block the local shell: spacing, type, colour, and component visual style versus the wireframes. The implemented screens are the specification’s nine management screens. No sensor dashboard was added.

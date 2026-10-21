@@ -1,0 +1,13 @@
+{
+  "id": "iotedu-pir",
+  "name": "PIR",
+  "description": "Passive infrared occupancy input. The reference Kconfig still mentions a PIR pin default, but no PIR driver is implemented.",
+  "type": "sensor",
+  "version": "0.0.0",
+  "status": "planned",
+  "source": "local",
+  "target": "esp32h2",
+  "idfCompatibility": ">=5.4.1 <5.5",
+  "selectableForBuild": false,
+  "firmware": null
+}

@@ -1,0 +1,13 @@
+{
+  "id": "iotedu-endpoint-templates",
+  "name": "Endpoint templates",
+  "description": "Structural notes for future Matter endpoint bindings. There is no compilable template component.",
+  "type": "template",
+  "version": "0.0.0",
+  "status": "template",
+  "source": "local",
+  "target": "esp32h2",
+  "idfCompatibility": ">=5.4.1 <5.5",
+  "selectableForBuild": false,
+  "firmware": null
+}

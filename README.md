@@ -6,39 +6,59 @@ The application commissions nodes onto an **IoT.Edu Management** fabric, builds 
 
 ## Current status
 
-**Phase 0 — source and environment validation.**
+**Phase 1 — local desktop shell.** Phase 0 firmware sources are unchanged. Commissioning, native compilation, USB flash, and Matter OTA are labelled mocks until later phases.
 
 | Capability | Status |
 |---|---|
 | Reference firmware import (allowlist + hashes) | Done |
 | Source audit | Done (`docs/SOURCE_AUDIT.md`) |
 | Baseline ESP-IDF compile of imported sources | **Passed** (`sensors.bin` 1,591,552 bytes, 19% OTA slot free) |
-| Desktop UI / local API | Not started |
+| Desktop UI and local API | Done for Phase 1 (mock commissioning, builds, and OTA) |
+| Local JSON catalogue | Done (no PostgreSQL, no GitHub) |
 | Modular DHT11 firmware | Not started (original sources preserved) |
-| USB flashing / Matter controller / OTA Provider | Not started |
+| USB flashing / Matter controller / real OTA Provider | Not started |
 | PostgreSQL / GitHub catalogue | Explicitly out of scope |
 
-## Supported platform (Phase 0)
+## Supported platform
 
 - macOS host
-- Node.js 22 LTS (observed 22.14.0) for later application work
+- Node.js 22.14.0 or newer for the desktop app and API
 - ESP-IDF **v5.4.1** via `IDF_PATH` (and `IDF_ACTIVATE` on Espressif EIM installs)
 - `ESP_MATTER_PATH` pointing at an esp-matter checkout that contains `connectedhomeip/connectedhomeip`
 
 Do not use a different IDF major/minor than 5.4.1 unless a later audit supersedes that pin.
 
-## Repository layout (so far)
+## Repository layout
 
 ```text
 iotedu/
-├── docs/                         audit, decisions, later-phase placeholders
+├── apps/desktop-ui/              React + TypeScript desktop (Vite, 127.0.0.1:5173)
+├── apps/local-api/               Fastify API (127.0.0.1:3847)
+├── packages/contracts/           Zod request and record contracts
+├── packages/catalog/             Read-only local catalogue
+├── packages/firmware-builder/    Partition, GPIO, and mock package checks
+├── packages/matter-controller/   Mock management service (no controller identity)
+├── catalog/manifests/            Component JSON
+├── board-profiles/esp32h2.json
+├── docs/
 ├── reference/matter-dht11/       imported allowlisted firmware sources
-├── scripts/import_reference_firmware.py
-├── scripts/baseline_build.sh
+├── scripts/
 ├── tests/test_import_reference_firmware.py
-├── toolchain.lock.json
-└── README.md
+└── toolchain.lock.json
 ```
+
+## Run the desktop app
+
+Requires Node.js 22.14.0 or newer.
+
+```bash
+npm install
+npm test
+npm run typecheck
+npm run dev
+```
+
+The UI is at `http://127.0.0.1:5173` and proxies `/api` to `http://127.0.0.1:3847`. Records go to `DATA_DIR` when set, otherwise the OS application-support directory for IoT.Edu. The API refuses any bind host other than `127.0.0.1`.
 
 ## Import the reference zip
 
@@ -69,7 +89,8 @@ Build trees (`build/`, `sdkconfig`, `managed_components/`) are gitignored.
 | `docs/SOURCE_AUDIT.md` | Zip inventory, hashes, firmware facts |
 | `docs/IMPLEMENTATION_STATUS.md` | Commands, tests, blockers |
 | `docs/DECISIONS.md` | Discrepancies and toolchain choices |
-| `docs/ARCHITECTURE.md` | Planned local-first architecture (not implemented) |
+| `docs/ARCHITECTURE.md` | Phase 1 local API, UI, and storage |
+| `docs/COMPONENT_CATALOGUE.md` | Local manifests and status rules |
 | Remaining `docs/*.md` | Later phases; no unimplemented feature is marked complete |
 
 ## What this project will not do in the initial release

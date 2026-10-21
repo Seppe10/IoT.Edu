@@ -1,0 +1,13 @@
+{
+  "id": "iotedu-rgb",
+  "name": "RGB LED",
+  "description": "RGB indicator output. Not implemented. Not deployable.",
+  "type": "actuator",
+  "version": "0.0.0",
+  "status": "planned",
+  "source": "local",
+  "target": "esp32h2",
+  "idfCompatibility": ">=5.4.1 <5.5",
+  "selectableForBuild": false,
+  "firmware": null
+}

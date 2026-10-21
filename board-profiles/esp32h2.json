@@ -1,0 +1,14 @@
+{
+  "id": "esp32h2-devkitm-1",
+  "target": "esp32h2",
+  "gpioMin": 0,
+  "gpioMax": 27,
+  "reservedGpio": [
+    { "gpio": 8, "reason": "ESP32-H2 strapping pin" },
+    { "gpio": 9, "reason": "BOOT / factory-reset button on the reference DevKit overlay" }
+  ],
+  "flashSizeBytes": 4194304,
+  "bootloaderOffset": 0,
+  "partitionTableOffset": 49152,
+  "notes": "Reserved pins are limited to the documented strapping and BOOT pins. Other pin capabilities are not silently assumed."
+}

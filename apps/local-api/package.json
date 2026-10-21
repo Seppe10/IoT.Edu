@@ -1,0 +1,27 @@
+{
+  "name": "@iotedu/local-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "11.0.1",
+    "@iotedu/catalog": "0.1.0",
+    "@iotedu/contracts": "0.1.0",
+    "@iotedu/firmware-builder": "0.1.0",
+    "@iotedu/matter-controller": "0.1.0",
+    "fastify": "5.12.7",
+    "zod": "3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.14.0",
+    "tsx": "4.19.3",
+    "typescript": "5.8.2",
+    "vitest": "3.2.7"
+  }
+}

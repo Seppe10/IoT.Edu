@@ -1,0 +1,28 @@
+{
+  "id": "iotedu-dht11",
+  "name": "DHT11 Driver",
+  "description": "Single-wire DHT11 temperature and humidity driver from the audited reference firmware. It publishes Matter TemperatureMeasurement and RelativeHumidityMeasurement. The desktop app does not display those readings. Modular registration is not extracted yet, so this entry can be selected only for a simulated package.",
+  "type": "sensor",
+  "version": "1.0.0",
+  "status": "experimental",
+  "source": "local",
+  "target": "esp32h2",
+  "idfCompatibility": ">=5.4.1 <5.5",
+  "selectableForBuild": true,
+  "firmware": {
+    "idfComponentDir": "reference/matter-dht11/main/drivers",
+    "registerFunction": null,
+    "requires": [],
+    "kconfig": [
+      {
+        "key": "CONFIG_IOTEDU_DHT11_PIN",
+        "pinName": "DHT11_DATA",
+        "default": 4
+      }
+    ],
+    "matter": {
+      "endpoints": ["temperature_sensor", "humidity_sensor"],
+      "clusters": ["TemperatureMeasurement", "RelativeHumidityMeasurement"]
+    }
+  }
+}
