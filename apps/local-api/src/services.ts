@@ -3,26 +3,30 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { LocalCatalogRepository } from "@iotedu/catalog";
 import {
-  OTA_LIFECYCLE,
   type BuildArtifact,
   type BuildJob,
   type FirmwareBuildRequest,
   type ManagedNode,
   type OtaJob,
   type OtaRequest,
+  type PreflightCheck,
   type PreflightResult,
   type ValidationResult,
 } from "@iotedu/contracts";
 import {
   appFitsPartition,
   detectGpioConflicts,
+  inspectMatterOtaImage,
   loadReferenceLayout,
   renderVersionSdkconfig,
   selectionIssues,
   versionSupersedes,
   type BoardProfile,
+  type MatterOtaInspection,
 } from "@iotedu/firmware-builder";
 import { runNativeDht11Build, type NativeBuildResult, type NativeBuildSpec } from "@iotedu/firmware-builder/native";
+import type { MatterManagementService } from "@iotedu/contracts";
+import { applyProviderEvent, confirmInstalledVersion, initialOtaStages, interruptRunningJob, recordStage } from "@iotedu/matter-controller";
 import type { BuildRepository, OtaRepository } from "./store.js";
 
 export type NativeRunner = (spec: NativeBuildSpec) => Promise<NativeBuildResult>;
@@ -442,189 +446,266 @@ export class LocalFirmwareBuildService {
 }
 
 export class LocalOtaService {
+  private listening = false;
+  private pending: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly builds: BuildRepository,
     private readonly jobs: OtaRepository,
-    private readonly nodes: { getById(id: string): Promise<import("@iotedu/contracts").ManagedNode | null> },
+    private readonly nodes: { getById(id: string): Promise<ManagedNode | null>; list(): Promise<ManagedNode[]> },
     private readonly profile: BoardProfile,
     private readonly repoRoot: string,
+    private readonly dataDir: string,
+    private readonly matter: MatterManagementService,
   ) {}
 
+  attach(): void {
+    if (this.listening) return;
+    this.listening = true;
+    this.matter.subscribeOta((event) => {
+      this.pending = this.pending.then(() => this.onProviderEvent(event.matterNodeId, event));
+    });
+  }
+
+  async recoverInterrupted(): Promise<void> {
+    for (const job of await this.jobs.list()) {
+      if (job.status !== "running") continue;
+      interruptRunningJob(job, "The controller restarted while this update was running. The image was not offered again, and no factory reset was performed.");
+      await this.jobs.save(job);
+    }
+  }
+
   async preflight(input: OtaRequest): Promise<PreflightResult> {
-    const checks: PreflightResult["checks"] = [];
-    const node = await this.nodes.getById(input.nodeId);
-    const build = await this.builds.get(input.buildId);
-    const artifact = build?.artifacts.find((item) => item.name === input.artifactName) ?? null;
-    const layout = await loadReferenceLayout(this.repoRoot, this.profile);
-    const slot = layout.partitions.find((row) => row.name === "ota_0");
-
-    checks.push({
-      id: "single_node",
-      label: "Exactly one node",
-      status: node ? "passed" : "failed",
-      mandatory: true,
-      detail: node ? `Target ${node.name}` : "The selected node does not exist.",
-    });
-    checks.push({
-      id: "artifact_present",
-      label: "Selected firmware artifact",
-      status: artifact ? "passed" : "failed",
-      mandatory: true,
-      detail: artifact ? artifact.name : "The artifact is not recorded for that build.",
-    });
-    checks.push({
-      id: "artifact_real",
-      label: "Deployable firmware image",
-      status: artifact && !artifact.simulated && artifact.deployable ? "passed" : "failed",
-      mandatory: true,
-      detail: artifact?.simulated
-        ? "This artifact is simulated. Mock output cannot be deployed."
-        : "No verified application binary or Matter OTA image is available.",
-    });
-    checks.push({
-      id: "installed_version",
-      label: "Installed firmware version",
-      status: node?.softwareVersion == null ? "unknown" : "passed",
-      mandatory: true,
-      detail:
-        node?.softwareVersion == null
-          ? "SoftwareVersion has not been read from the node."
-          : `Installed SoftwareVersion ${node.softwareVersion}.`,
-    });
-    checks.push({
-      id: "version_newer",
-      label: "Firmware version eligibility",
-      status:
-        node?.softwareVersion == null || !build
-          ? "unknown"
-          : build.request.softwareVersion > node.softwareVersion
-            ? "passed"
-            : "failed",
-      mandatory: true,
-      detail:
-        node?.softwareVersion == null
-          ? "Eligibility is unknown until the installed version is read."
-          : `Candidate ${build?.request.softwareVersion} compared with installed ${node.softwareVersion}.`,
-    });
-    checks.push({
-      id: "hardware",
-      label: "Hardware compatibility",
-      status: "unknown",
-      mandatory: true,
-      detail: "Hardware identity has not been read from the device.",
-    });
-    checks.push({
-      id: "vid_pid",
-      label: "VID and PID compatibility",
-      status: node?.vendorId == null || node.productId == null ? "unknown" : "passed",
-      mandatory: true,
-      detail: "Vendor and product identifiers have not been read from Basic Information.",
-    });
-    checks.push({
-      id: "size",
-      label: "Firmware size and slot capacity",
-      status: artifact?.simulated ? "unknown" : artifact && slot ? (appFitsPartition(artifact.size, slot.size).some((issue) => issue.level === "error") ? "failed" : "passed") : "unknown",
-      mandatory: true,
-      detail: artifact?.simulated
-        ? "Size was not assessed because the file is not a firmware image."
-        : artifact && slot
-          ? `${artifact.name} is ${artifact.size} bytes. The OTA slot is ${slot.size} bytes.`
-          : "No firmware image is available to measure.",
-    });
-    checks.push({
-      id: "partition_layout",
-      label: "Partition layout compatibility",
-      status: node?.partitionLayoutId == null ? "unknown" : node.partitionLayoutId === layout.layoutId ? "passed" : "failed",
-      mandatory: true,
-      detail:
-        node?.partitionLayoutId == null
-          ? "Layout is unknown until the node is flashed by this application."
-          : "Compared with the reference partition layout.",
-    });
-    checks.push({
-      id: "ota_requestor",
-      label: "OTA Requestor support",
-      status: "unknown",
-      mandatory: true,
-      detail: "The OTA Software Update Requestor cluster has not been read.",
-    });
-    checks.push({
-      id: "management_fabric",
-      label: "Management fabric availability",
-      status: "unknown",
-      mandatory: true,
-      detail: "No management fabric session is loaded.",
-    });
-    checks.push({
-      id: "ota_provider",
-      label: "OTA Provider readiness",
-      status: "unknown",
-      mandatory: true,
-      detail: "The local OTA Provider is not running.",
-    });
-    checks.push({
-      id: "reachability",
-      label: "Node reachability",
-      status: node?.reachable == null ? "unknown" : node.reachable ? "passed" : "failed",
-      mandatory: true,
-      detail: "Reachability requires a Matter administrative session, which is not available.",
-    });
-    checks.push({
-      id: "power",
-      label: "Power-related warning",
-      status: "warning",
-      mandatory: false,
-      detail: "Keep the board powered for the whole transfer. This warning does not mean a transfer has started.",
-    });
-    checks.push({
-      id: "approval",
-      label: "Explicit user approval",
-      status: input.userApproved ? "passed" : "failed",
-      mandatory: true,
-      detail: input.userApproved ? "Approval was supplied." : "Deployment requires explicit approval.",
-    });
-
-    const allowed = checks.filter((check) => check.mandatory).every((check) => check.status === "passed");
+    const prepared = await this.inspect(input);
+    const allowed = prepared.checks.filter((check) => check.mandatory).every((check) => check.status === "passed");
     return {
       allowed,
-      checks,
+      checks: prepared.checks,
       message: allowed
-        ? "Preflight passed."
-        : "Deployment is blocked. Unknown mandatory checks are not treated as passed.",
+        ? "Preflight passed. Deployment still waits for the device to request the image and to report the new SoftwareVersion."
+        : "Deployment is blocked. A mandatory check failed or could not be verified.",
     };
   }
 
   async deploy(input: OtaRequest): Promise<OtaJob> {
-    const preflight = await this.preflight(input);
+    const prepared = await this.inspect(input);
+    const allowed = prepared.checks.filter((check) => check.mandatory).every((check) => check.status === "passed");
     const now = new Date().toISOString();
+    const preflight = {
+      allowed,
+      checks: prepared.checks,
+      message: allowed
+        ? "Preflight passed. Deployment still waits for the device to request the image and to report the new SoftwareVersion."
+        : "Deployment is blocked. A mandatory check failed or could not be verified.",
+    };
     const job: OtaJob = {
       id: randomUUID(),
-      simulated: true,
-      status: preflight.allowed ? "failed" : "blocked",
+      simulated: false,
+      status: allowed ? "running" : "blocked",
       request: input,
       preflight,
-      stages: OTA_LIFECYCLE.map((stage) => ({
-        id: stage.id,
-        label: stage.label,
-        state: "not_observed" as const,
-        detail: "No Matter OTA event has been observed.",
-      })),
+      stages: initialOtaStages(),
+      matterNodeId: prepared.node?.matterNodeId ?? null,
+      expectedSoftwareVersion: prepared.image?.softwareVersion ?? null,
+      previousSoftwareVersion: prepared.node?.softwareVersion ?? null,
       installedVersionConfirmed: false,
-      message: preflight.allowed
-        ? "Preflight passed unexpectedly without a provider. Deployment was not started."
+      message: allowed
+        ? "Preflight passed. The provider has not announced the image yet."
         : "Deployment was not started. " + preflight.message,
       createdAt: now,
       updatedAt: now,
     };
-    if (preflight.allowed) {
-      job.status = "failed";
-      job.message = "Refusing to mark success. The OTA Provider is not implemented, so no image was offered.";
+    if (!allowed || !prepared.imageBytes || !prepared.node?.matterNodeId || prepared.image?.vendorId == null || prepared.image.productId == null || prepared.image.softwareVersion == null) {
+      job.status = "blocked";
+      job.simulated = prepared.node?.simulated === true;
+      await this.jobs.save(job);
+      return job;
     }
+    const running = (await this.jobs.list()).find((item) => item.request.nodeId === input.nodeId && item.status === "running");
+    if (running) {
+      job.status = "blocked";
+      job.message = "Another update is already running for this node. It was not interrupted.";
+      await this.jobs.save(job);
+      return job;
+    }
+    recordStage(job, "preflight", "observed", "Every mandatory preflight check was verified.");
+    await this.jobs.save(job);
+    try {
+      await this.matter.beginOta({
+        matterNodeId: prepared.node.matterNodeId,
+        image: prepared.imageBytes,
+        vendorId: prepared.image.vendorId,
+        productId: prepared.image.productId,
+        softwareVersion: prepared.image.softwareVersion,
+      });
+      await this.pending;
+      const current = (await this.jobs.get(job.id)) ?? job;
+      recordStage(current, "provider_ready", "observed", "The image is stored on the management controller and the provider announced it on the management fabric. A device request has not been received.");
+      current.message = "The provider is ready. The update is not complete until the device reports the new SoftwareVersion.";
+      current.updatedAt = new Date().toISOString();
+      await this.jobs.save(current);
+      return current;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "The provider could not offer the image.";
+      recordStage(job, "provider_ready", "failed", detail);
+      job.status = "failed";
+      job.message = `${detail} No factory reset was performed.`;
+    }
+    job.updatedAt = new Date().toISOString();
     await this.jobs.save(job);
     return job;
   }
 
   async get(id: string) {
-    return this.jobs.get(id);
+    const job = await this.jobs.get(id);
+    if (!job || job.status !== "running" || !job.matterNodeId) return job;
+    try {
+      const version = await this.matter.readInstalledSoftwareVersion(job.matterNodeId);
+      confirmInstalledVersion(job, version, null);
+    } catch (error) {
+      confirmInstalledVersion(job, null, error instanceof Error ? error.message : "The device could not be read.");
+    }
+    await this.jobs.save(job);
+    return job;
   }
+
+  private async onProviderEvent(matterNodeId: string, event: Parameters<typeof applyProviderEvent>[1]): Promise<void> {
+    const job = (await this.jobs.list()).find((item) => item.matterNodeId === matterNodeId && (item.status === "running" || item.status === "interrupted"));
+    if (!job || job.status !== "running") return;
+    applyProviderEvent(job, event);
+    await this.jobs.save(job);
+  }
+
+  private async inspect(input: OtaRequest): Promise<{
+    checks: PreflightCheck[];
+    node: ManagedNode | null;
+    image: MatterOtaInspection | null;
+    imageBytes: Uint8Array | null;
+  }> {
+    const checks: PreflightCheck[] = [];
+    const node = await this.nodes.getById(input.nodeId);
+    const build = await this.builds.get(input.buildId);
+    const artifact = build?.artifacts.find((item) => item.name === input.artifactName) ?? null;
+    const layout = await loadReferenceLayout(this.repoRoot, this.profile);
+    const slot = layout.partitions.find((row) => row.name === "ota_0");
+    const provider = await this.matter.getOtaProviderStatus();
+    const others = (await this.jobs.list()).filter((job) => job.request.nodeId === input.nodeId && job.status === "running");
+    let image: MatterOtaInspection | null = null;
+    let imageBytes: Uint8Array | null = null;
+    const realFile = Boolean(artifact && !artifact.simulated && artifact.deployable && artifact.name.endsWith(".ota") && build?.verification === "compiled");
+    if (realFile && artifact && build) {
+      try {
+        imageBytes = await readFile(path.join(this.dataDir, "builds", build.id, "artifacts", artifact.name));
+        image = inspectMatterOtaImage(imageBytes);
+      } catch {
+        image = null;
+      }
+    }
+    const push = (check: PreflightCheck) => checks.push(check);
+    push({ id: "single_node", label: "Device identity", status: node ? "passed" : "failed", mandatory: true, detail: node ? `${node.name}. Matter node ${node.matterNodeId ?? "not assigned"}.` : "The selected node does not exist." });
+    push({ id: "artifact_present", label: "Selected firmware package", status: artifact ? "passed" : "failed", mandatory: true, detail: artifact ? artifact.name : "The artifact is not recorded for that build." });
+    push({
+      id: "artifact_real",
+      label: "Compiled Matter OTA image",
+      status: realFile ? "passed" : "failed",
+      mandatory: true,
+      detail: artifact?.simulated || build?.verification === "simulated"
+        ? "This package is simulated. It cannot be offered to a device."
+        : realFile ? "The build is compiled and the selected file is a .ota image." : "Only a compiled sensors.ota image can be offered.",
+    });
+    push({
+      id: "matter_image",
+      label: "Image compatibility",
+      status: artifact?.simulated ? "failed" : !realFile ? "unknown" : image?.ok ? "passed" : "failed",
+      mandatory: true,
+      detail: artifact?.simulated ? "A simulated file is not a Matter OTA image." : image?.error ?? (image?.ok ? `Matter OTA header VID ${hex(image.vendorId)} PID ${hex(image.productId)} SoftwareVersion ${image.softwareVersion}.` : "The file was not read."),
+    });
+    push({
+      id: "installed_version",
+      label: "Current firmware version",
+      status: node?.softwareVersion == null ? "unknown" : "passed",
+      mandatory: true,
+      detail: node?.softwareVersion == null ? "SoftwareVersion has not been read from the node." : `Installed SoftwareVersion ${node.softwareVersion} (${node.softwareVersionString ?? "no version string"}).`,
+    });
+    push({
+      id: "version_newer",
+      label: "Proposed firmware version",
+      status: node?.softwareVersion == null || image?.softwareVersion == null ? "unknown" : image.softwareVersion > node.softwareVersion && image.softwareVersion === build?.request.softwareVersion ? "passed" : "failed",
+      mandatory: true,
+      detail: image?.softwareVersion == null ? "The image version could not be verified." : `Image SoftwareVersion ${image.softwareVersion} (${image.softwareVersionString ?? ""}). Installed SoftwareVersion ${node?.softwareVersion ?? "unknown"}.`,
+    });
+    push({
+      id: "vid_pid",
+      label: "Vendor and product",
+      status: node?.vendorId == null || node?.productId == null || image?.vendorId == null || image.productId == null ? "unknown" : node.vendorId === image.vendorId && node.productId === image.productId ? "passed" : "failed",
+      mandatory: true,
+      detail: image?.vendorId == null ? "Vendor and product identifiers were not verified from the image and the device." : `Image ${hex(image.vendorId)}/${hex(image.productId)}. Device ${hex(node?.vendorId ?? null)}/${hex(node?.productId ?? null)}.`,
+    });
+    push({
+      id: "hardware",
+      label: "ESP32-H2 target",
+      status: !image ? "unknown" : image.targetsEsp32h2 ? "passed" : "failed",
+      mandatory: true,
+      detail: image?.targetsEsp32h2 ? "The payload image header names ESP32-H2." : image?.chipId == null ? "The payload chip id could not be verified." : `The payload chip id is ${image.chipId}, not ESP32-H2.`,
+    });
+    push({
+      id: "size",
+      label: "OTA partition capacity",
+      status: image?.payloadSize == null || !slot ? "unknown" : appFitsPartition(image.payloadSize, slot.size).some((issue) => issue.level === "error") ? "failed" : "passed",
+      mandatory: true,
+      detail: image?.payloadSize == null || !slot ? "The payload size or the OTA slot size is not available." : `Payload ${image.payloadSize} bytes. OTA slot ${slot.size} bytes.`,
+    });
+    push({
+      id: "partition_layout",
+      label: "Partition compatibility",
+      status: node?.partitionLayoutId == null ? "unknown" : node.partitionLayoutId === layout.layoutId ? "passed" : "failed",
+      mandatory: true,
+      detail: node?.partitionLayoutId == null ? "The partition layout has not been recorded for this node." : node.partitionLayoutId === layout.layoutId ? "The recorded layout matches the firmware partition table." : "The recorded layout does not match the firmware partition table.",
+    });
+    push({
+      id: "ota_requestor",
+      label: "OTA Requestor capability",
+      status: node?.firmwareUpdateEligible == null ? "unknown" : node.firmwareUpdateEligible ? "passed" : "failed",
+      mandatory: true,
+      detail: node?.firmwareUpdateEligible == null ? "The OTA Software Update Requestor has not been read." : node.firmwareUpdateEligible ? "The requestor reported that an update is possible. That read does not authorise the update." : "The requestor reported that an update is not possible.",
+    });
+    push({
+      id: "management_fabric",
+      label: "Matter management connection",
+      status: node?.simulated || !node?.matterNodeId ? "failed" : node.connection === "reachable" ? "passed" : node.connection === "offline" ? "failed" : "unknown",
+      mandatory: true,
+      detail: node?.matterNodeId ? `Management connection ${node.connection ?? "unknown"}.` : "This record is not on the management fabric.",
+    });
+    push({
+      id: "ota_provider",
+      label: "Provider connectivity",
+      status: provider.running && provider.fabricScoped && provider.ledgerOffline ? "passed" : "failed",
+      mandatory: true,
+      detail: provider.running ? `OTA Provider endpoint ${provider.endpointNumber ?? "unknown"}. The image ledger client is offline, so only an image stored by this controller can be served.` : "The OTA Provider is not running on the management controller.",
+    });
+    push({
+      id: "provider_permission",
+      label: "Provider permission",
+      status: !provider.running || node?.simulated || !node?.matterNodeId ? "failed" : node.connection == null ? "unknown" : node.connection === "reachable" && input.userApproved ? "passed" : "failed",
+      mandatory: true,
+      detail: "A requestor read is not enough. The offer requires this controller's fabric session and explicit approval.",
+    });
+    const mandatoryOpen = checks.filter((check) => check.mandatory && check.status !== "passed");
+    push({
+      id: "transfer_ready",
+      label: "Transfer readiness",
+      status: others.length > 0 ? "failed" : mandatoryOpen.length === 0 && input.userApproved ? "passed" : mandatoryOpen.some((check) => check.status === "unknown") ? "unknown" : "failed",
+      mandatory: true,
+      detail: others.length > 0 ? "An update is already running for this node." : "Transfer readiness follows the checks above. Rollback has not been verified.",
+    });
+    push({ id: "power", label: "Power-related warning", status: "warning", mandatory: false, detail: "Keep the board powered for the whole transfer. This warning does not mean a transfer has started." });
+    push({ id: "rollback", label: "Rollback", status: "unknown", mandatory: false, detail: "Rollback is not claimed. The bootloader and firmware have not been shown to roll back." });
+    push({ id: "approval", label: "Explicit user approval", status: input.userApproved ? "passed" : "failed", mandatory: true, detail: input.userApproved ? "Approval was supplied for this node and this package." : "Deployment requires explicit approval." });
+    return { checks, node, image, imageBytes };
+  }
+}
+
+function hex(value: number | null): string {
+  if (value == null) return "unknown";
+  return `0x${value.toString(16).toUpperCase().padStart(4, "0")}`;
 }

@@ -258,7 +258,7 @@ export type PreflightResult = z.infer<typeof preflightResultSchema>;
 export const otaStageSchema = z.object({
   id: z.string(),
   label: z.string(),
-  state: z.enum(["not_observed", "simulated", "observed_ok", "observed_failed"]),
+  state: z.enum(["not_observed", "observed", "inferred", "failed", "interrupted"]),
   detail: z.string(),
 });
 
@@ -269,12 +269,30 @@ export const otaJobSchema = z.object({
   request: otaRequestSchema,
   preflight: preflightResultSchema,
   stages: z.array(otaStageSchema),
+  matterNodeId: z.string().nullable(),
+  expectedSoftwareVersion: z.number().int().nullable(),
+  previousSoftwareVersion: z.number().int().nullable(),
   installedVersionConfirmed: z.boolean(),
   message: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type OtaJob = z.infer<typeof otaJobSchema>;
+
+export const otaProviderStatusSchema = z.object({
+  running: z.boolean(),
+  endpointNumber: z.number().int().nullable(),
+  fabricScoped: z.boolean(),
+  ledgerOffline: z.boolean(),
+});
+export type OtaProviderStatus = z.infer<typeof otaProviderStatusSchema>;
+
+export const otaProviderEventSchema = z.object({
+  type: z.enum(["bdx-start", "bdx-complete", "bdx-interrupted", "applying", "failed"]),
+  matterNodeId: z.string(),
+  detail: z.string(),
+});
+export type OtaProviderEvent = z.infer<typeof otaProviderEventSchema>;
 
 export const capabilityReportSchema = z.object({
   applicationVersion: z.string(),
@@ -341,6 +359,10 @@ export interface MatterManagementService {
   commission(input: CommissionRequest): Promise<CommissionResult>;
   refreshNode(nodeId: string): Promise<RefreshResult>;
   openCommissioningWindow(nodeId: string): Promise<CommissioningWindowResult>;
+  getOtaProviderStatus(): Promise<OtaProviderStatus>;
+  beginOta(input: { matterNodeId: string; image: Uint8Array; vendorId: number; productId: number; softwareVersion: number }): Promise<void>;
+  readInstalledSoftwareVersion(matterNodeId: string): Promise<number | null>;
+  subscribeOta(listener: (event: OtaProviderEvent) => void): () => void;
 }
 
 export interface OtaDeploymentService {
@@ -394,12 +416,13 @@ export const programSessionSchema = z.object({
 export type ProgramSession = z.infer<typeof programSessionSchema>;
 
 export const OTA_LIFECYCLE = [
-  { id: "prepare_provider", label: "Preparing the provider" },
-  { id: "offer_image", label: "Offering the firmware image" },
-  { id: "requestor_ack", label: "Requestor acknowledgement" },
-  { id: "transfer", label: "Firmware transfer" },
-  { id: "install_reboot", label: "Installation and reboot" },
-  { id: "reconnect", label: "Reconnection" },
-  { id: "validate", label: "Post-update validation" },
-  { id: "complete", label: "Completion" },
+  { id: "preflight", label: "Preflight completed" },
+  { id: "provider_ready", label: "Provider ready" },
+  { id: "update_request", label: "Device update request received" },
+  { id: "transfer_started", label: "Image transfer started" },
+  { id: "transfer_completed", label: "Image transfer completed" },
+  { id: "applying", label: "Device applying update" },
+  { id: "restart", label: "Device restart or temporary disconnection" },
+  { id: "reconnected", label: "Device reconnected" },
+  { id: "version_verified", label: "New SoftwareVersion verified" },
 ] as const;

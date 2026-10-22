@@ -72,7 +72,9 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     paths.listPorts,
   );
   await programmer.recoverInterrupted();
-  const ota = new LocalOtaService(builds, otas, nodes, paths.profile, paths.repoRoot);
+  const ota = new LocalOtaService(builds, otas, nodes, paths.profile, paths.repoRoot, paths.dataDir, matter);
+  ota.attach();
+  await ota.recoverInterrupted();
   const auditFile = path.join(paths.dataDir, "audit.jsonl");
 
   const app = Fastify({ logger: false });

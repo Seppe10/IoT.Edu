@@ -35,4 +35,10 @@ export interface ManagementTransport {
   reconnect(): Promise<ObservedNode[]>;
   openSharingWindow(matterNodeId: string): Promise<SharingWindow>;
   close(): Promise<void>;
+  otaProviderStatus(): Promise<import("@iotedu/contracts").OtaProviderStatus>;
+  beginOta(input: { matterNodeId: string; image: Uint8Array; vendorId: number; productId: number; softwareVersion: number }): Promise<void>;
+  subscribeOta(listener: (event: import("@iotedu/contracts").OtaProviderEvent) => void): () => void;
+  listStoredImages(): Promise<Array<{ vendorId: number; productId: number; softwareVersion: number; mode: string }>>;
+  storeLocalImage(image: Uint8Array, softwareVersion: number): Promise<void>;
+  exerciseBdxArm(): Promise<{ armed: boolean; cleared: boolean }>;
 }

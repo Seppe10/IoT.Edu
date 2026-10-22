@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-10-22 (Phase 5 Matter management controller; no board has been programmed or commissioned).
+Last updated: 2026-10-22 (Phase 6 Matter OTA Provider; no board has been programmed, commissioned, or updated).
 
 ## Phase 0 gate
 
@@ -178,7 +178,7 @@ npm run typecheck # passed for all six workspaces
 ## Remaining limitations
 
 - Docker builds are unavailable.
-- The OTA Provider is not running, so a compiled `.ota` file still cannot be deployed. Preflight keeps unknown live checks blocking.
+- The OTA Provider is installed in software. No device has requested an image, so deployment to hardware remains pending. Preflight still blocks a check that was not verified.
 - USB writing is implemented for macOS and a compiled package. No board was written in Phase 4, so startup, Matter, OpenThread, DHT11, and GPIO9 remain pending.
 - Test VID/PID and example DAC providers.
 - `esp_bsp_generic` still pulls the same unused LCD/LVGL components. The dependency lock was not changed.
@@ -211,15 +211,28 @@ npm run typecheck # passed for all six workspaces
 | USB write on a connected ESP32-H2 | Not run |
 | Commissioning against a HomePod mini | Not run |
 
-### Phase 6 requirements
+### Phase 6
 
-Do not start until this phase has been reviewed. The OTA Provider should:
+**Met for the provider in software.** The management controller installs `OtaProviderEndpoint` from Matter.js 0.18.0. `QueryImage`, `ApplyUpdateRequest`, `NotifyUpdateApplied`, and BDX are the SDK implementations. A compiled `.ota` file is accepted only after the Matter header, SHA-256 payload digest, VID, PID, newer SoftwareVersion, ESP32-H2 chip id, and partition slot all check out. Simulated files are rejected. A running job is not marked succeeded when BDX finishes. Success requires a later SoftwareVersion read. A second job for the same node is refused. A restart marks a running job interrupted and does not erase the controller identity or device NVS.
 
-- Use Matter OTA and BDX on the management CASE session.
-- Offer one compiled `.ota` image whose VID, PID, and SoftwareVersion match the package.
-- Query the OTA Software Update Requestor already read on endpoint 0.
-- Leave sensor measurements and actuator commands untouched.
-- Record an interrupted transfer as interrupted, not as success.
-- Update one selected node.
+No physical update was performed. The 1.1.0 to 1.2.0 HomePod checklist is pending.
+
+```text
+npm test          # 61 vitest tests, all passed
+npm run typecheck # passed for all six workspaces
+```
+
+| Suite | Result |
+|---|---|
+| `@iotedu/contracts` (4) | Passed |
+| `@iotedu/catalog` (3) | Passed |
+| `@iotedu/firmware-builder` (23) | Passed |
+| `@iotedu/matter-controller` (12) | Passed |
+| `@iotedu/local-api` (18) | Passed |
+| `@iotedu/desktop-ui` (1) | Passed |
+| Typecheck, all workspaces | Passed |
+| ESP32-H2 OTA from SoftwareVersion 2 to 3 | Not run |
+
+Matter.js 0.18.0 does not select storage mode `local` during `QueryImage` unless test-ledger images are also allowed. This provider stores the validated file with mode `prod` and keeps the ledger client offline. The mode does not skip the image digest, VID, PID, SoftwareVersion, consent, or the secure BDX session. The SDK also refuses to announce a provider until the peer has an active subscription, so an offer subscribes to endpoint 0 attributes only.
 
 `docs/PHASE2_DATABASE.md` is a separate design note for a future PostgreSQL catalogue and GitHub client. The running application has no PostgreSQL client and no GitHub catalogue client.

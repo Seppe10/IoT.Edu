@@ -27,6 +27,9 @@ const NEW_DEVICE_LIMITATION =
 export class LiveMatterManagementService implements MatterManagementService {
   private startupError: string | null = null;
   private transportPromise: Promise<ManagementTransport> | null = null;
+  private providerInstalled = false;
+  private unsubscribeOta: (() => void) | null = null;
+  private readonly otaListeners = new Set<(event: import("@iotedu/contracts").OtaProviderEvent) => void>();
 
   constructor(
     private readonly nodes: NodeRepository,
@@ -43,7 +46,7 @@ export class LiveMatterManagementService implements MatterManagementService {
       bleCommissioning: "unsupported",
       threadDataset: "needs_setup",
       firmwareBuild: "mock_only",
-      otaProvider: "mock_only",
+      otaProvider: this.providerInstalled ? "available" : "needs_setup",
       usbFlash: "needs_setup",
       ai: "needs_setup",
       notes: [
@@ -54,7 +57,9 @@ export class LiveMatterManagementService implements MatterManagementService {
         BACKUP_INSTRUCTIONS,
         "Administrative reads use Basic Information, Descriptor, Operational Credentials, and the OTA requestor. Sensor measurements and actuator commands are not requested.",
         `The firmware accepts at most ${FABRIC_LIMIT} fabrics. A fabric-table rejection does not factory reset the node.`,
-        "The OTA Provider is not running. Hardware verification of commissioning has not been recorded.",
+        this.providerInstalled
+          ? "The OTA Provider cluster is installed on this controller. The DCL is offline. No image transfer to a physical node has been verified."
+          : "The OTA Provider is not running. Hardware verification of commissioning has not been recorded.",
       ],
     };
   }
@@ -138,10 +143,44 @@ export class LiveMatterManagementService implements MatterManagementService {
   }
 
   async close(): Promise<void> {
+    this.unsubscribeOta?.();
+    this.unsubscribeOta = null;
     if (!this.transportPromise) return;
     const transport = await this.transportPromise;
     await transport.close();
     this.transportPromise = null;
+    this.providerInstalled = false;
+  }
+
+  async getOtaProviderStatus() {
+    if (!this.transportPromise) {
+      return { running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true };
+    }
+    try {
+      return await (await this.transportPromise).otaProviderStatus();
+    } catch {
+      return { running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true };
+    }
+  }
+
+  async beginOta(input: { matterNodeId: string; image: Uint8Array; vendorId: number; productId: number; softwareVersion: number }) {
+    if (!this.transportPromise) {
+      throw new MatterOperationError("identity_missing", "The management controller is not running, so no image was offered.");
+    }
+    await (await this.transportPromise).beginOta(input);
+  }
+
+  async readInstalledSoftwareVersion(matterNodeId: string) {
+    const node = (await this.nodes.list()).find((item) => item.matterNodeId === matterNodeId);
+    if (!node) return null;
+    const result = await this.refreshNode(node.id);
+    if (result.liveRead !== "read") return null;
+    return result.node.softwareVersion;
+  }
+
+  subscribeOta(listener: (event: import("@iotedu/contracts").OtaProviderEvent) => void) {
+    this.otaListeners.add(listener);
+    return () => this.otaListeners.delete(listener);
   }
 
   async commission(input: CommissionRequest) {
@@ -250,7 +289,15 @@ export class LiveMatterManagementService implements MatterManagementService {
         ? Promise.resolve(this.injected)
         : import("./live.js").then((module) => module.openMatterTransport(this.directory(), options));
     }
-    return this.transportPromise;
+    const transport = await this.transportPromise;
+    const status = await transport.otaProviderStatus();
+    this.providerInstalled = status.running;
+    if (!this.unsubscribeOta) {
+      this.unsubscribeOta = transport.subscribeOta((event) => {
+        for (const listener of this.otaListeners) listener(event);
+      });
+    }
+    return transport;
   }
 
   private directory(): string {

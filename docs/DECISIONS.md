@@ -184,3 +184,15 @@ The first identity is an explicit Settings action. Later starts reopen `$DATA_DI
 ### A failed join does not factory reset the device
 
 Fabric-table rejection, discovery failure, and a lost CASE session leave the node as it was. Recovery is a backup of the `matter-controller` directory, or a new commissioning window opened by an administrator that is still on the device. The firmware’s fabric table holds five fabrics.
+
+## Phase 6
+
+### The provider is the Matter.js cluster, not a file copy
+
+The OTA Software Update Provider, BDX, and the announcement command come from Matter.js 0.18.0. IoT.Edu selects the image and records what the SDK reports. It does not mark an update complete because the bytes were sent. The installed SoftwareVersion has to be read afterwards.
+
+Matter.js 0.18.0 `SoftwareUpdateManager.updateExistsFor` returns a stored file only when its storage mode is `prod`, unless `allowTestOtaImages` is turned on. Mode `local` is skipped by that filter. IoT.Edu leaves `allowTestOtaImages` false and stores the file with mode `prod` so `QueryImage` can see it. The ledger client stays offline, so the slot is not filled by a download.
+
+That mode flag is not an integrity or authorisation bypass. Before the file is stored, `OtaImageReader` recomputes the payload digest and rejects a mismatch. `QueryImage` still requires the image vendor ID and product ID, a strictly newer SoftwareVersion inside the applicable range, and update consent for that peer. BDX `requiresSecureSession` is true, so the transfer stays on the management CASE session. IoT.Edu also rejects the file in preflight when the header, digest, chip id, partition slot, or requestor read does not check out. The Matter image digest is SHA-256. This build does not add a separate vendor signature check, and secure boot of the ESP image is not claimed.
+
+A second update for the same node is refused while one is running. A restart marks the job interrupted and does not offer the image again, erase NVS, or replace the controller identity. Rollback is not claimed.

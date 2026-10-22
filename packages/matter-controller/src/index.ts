@@ -14,6 +14,7 @@ import { BACKUP_INSTRUCTIONS } from "./errors.js";
 export { MatterOperationError } from "./errors.js";
 export { LiveMatterManagementService, normalizePairingCode } from "./service.js";
 export { redactSecrets } from "./redact.js";
+export { applyProviderEvent, confirmInstalledVersion, initialOtaStages, interruptRunningJob, recordStage } from "./ota-job.js";
 
 /**
  * Phase 1 stand-in. It records a local node and never opens a Matter session,
@@ -131,6 +132,22 @@ export class MockMatterManagementService implements MatterManagementService {
       message:
         "AdministratorCommissioning was not invoked. A commissioning window can be opened only after a real management session exists.",
     };
+  }
+
+  async getOtaProviderStatus(): Promise<import("@iotedu/contracts").OtaProviderStatus> {
+    return { running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true };
+  }
+
+  async beginOta(_input: { matterNodeId: string; image: Uint8Array; vendorId: number; productId: number; softwareVersion: number }): Promise<void> {
+    throw new Error("The OTA Provider is not running. A simulated record cannot receive firmware.");
+  }
+
+  async readInstalledSoftwareVersion(_matterNodeId: string): Promise<number | null> {
+    return null;
+  }
+
+  subscribeOta(_listener: (event: import("@iotedu/contracts").OtaProviderEvent) => void): () => void {
+    return () => undefined;
   }
 }
 

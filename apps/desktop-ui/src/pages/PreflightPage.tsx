@@ -27,8 +27,9 @@ export function PreflightPage() {
   }, []);
 
   const selectedBuild = builds.find((build) => build.id === buildId);
-  const artifactName = selectedBuild?.artifacts[0]?.name ?? "";
+  const artifactName = selectedBuild?.artifacts.find((item) => item.name.endsWith(".ota"))?.name ?? selectedBuild?.artifacts[0]?.name ?? "";
   const node = nodes.find((item) => item.id === nodeId);
+  const unresolved = result?.checks.filter((check) => check.mandatory && check.status !== "passed") ?? [];
 
   async function runPreflight() {
     setError(null);
@@ -56,7 +57,7 @@ export function PreflightPage() {
     <section className="stack">
       <header>
         <h1>OTA Preflight</h1>
-        <p className="lede">One node at a time. A failed or unknown mandatory check blocks deployment. There is no percentage because no transfer is running.</p>
+        <p className="lede">One node at a time. A failed or unknown mandatory check blocks deployment. Completion is a later SoftwareVersion read, not the end of the file transfer.</p>
       </header>
       {error && <div className="banner bad">{error}</div>}
       <div className="panel stack">
@@ -73,8 +74,12 @@ export function PreflightPage() {
           </select>
         </label>
         <p className="muted">
-          Installed version: {node?.softwareVersionString ?? "not read"}. Candidate: {selectedBuild?.request.softwareVersionString ?? "none"}.
-          Artifact: {artifactName || "none"}.
+          Device: {node?.name ?? "none"}. Matter node: {node?.matterNodeId ?? "not assigned"}.
+          Connection: {node?.connection ?? "unknown"}.
+          Installed SoftwareVersion: {node?.softwareVersion ?? "not read"} {node?.softwareVersionString ? `(${node.softwareVersionString})` : ""}.
+          Proposed: {selectedBuild?.request.softwareVersion ?? "none"} {selectedBuild?.request.softwareVersionString ? `(${selectedBuild.request.softwareVersionString})` : ""}.
+          Package: {artifactName || "none"}.
+          OTA Requestor: {node?.firmwareUpdateEligible == null ? "not read" : node.firmwareUpdateEligible ? "update possible" : "update not possible"}.
         </p>
         <label className="row">
           <input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} />
@@ -90,6 +95,7 @@ export function PreflightPage() {
         <div className="panel">
           <h2>{result.allowed ? "Allowed" : "Blocked"}</h2>
           <p>{result.message}</p>
+          {unresolved.length > 0 && <p>{unresolved.length} mandatory {unresolved.length === 1 ? "check is" : "checks are"} unresolved: {unresolved.map((check) => check.label).join(", ")}.</p>}
           <div className="checks">
             {result.checks.map((check) => (
               <div className="check" key={check.id}>
@@ -101,7 +107,7 @@ export function PreflightPage() {
         </div>
       )}
       {job && <Link className="button" to={`/ota/jobs/${job.id}`}>Open deployment record</Link>}
-      <p className="muted">Power warning: leave the board powered for any future transfer. This screen has not started one.</p>
+      <p className="muted">Power warning: leave the board powered for any transfer. Rollback is not claimed. A requestor read does not by itself authorise an update.</p>
     </section>
   );
 }

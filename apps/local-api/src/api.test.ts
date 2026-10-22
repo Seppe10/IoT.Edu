@@ -479,6 +479,10 @@ describe("local API", () => {
         manualPairingCode: "3497-011-2332",
         qrPairingCode: "MT:Y.ABCDEF",
       }),
+      getOtaProviderStatus: () => Promise.resolve({ running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true }),
+      beginOta: () => Promise.reject(new Error("unused")),
+      readInstalledSoftwareVersion: () => Promise.resolve(null),
+      subscribeOta: () => () => undefined,
     };
     const { app } = await createApp({ dataDir, matter });
     closers.push(app);

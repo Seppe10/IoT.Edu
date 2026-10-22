@@ -40,7 +40,15 @@ Stop IoT.Edu. Copy `matter-controller` from the data directory to an encrypted l
 
 ## OTA Provider
 
-Not implemented. It must use Matter OTA/BDX on the management session, and the image metadata must match the compiled VID, PID, and SoftwareVersion. It must not subscribe to sensor measurements.
+The management node adds one `OtaProviderEndpoint`. Matter.js 0.18.0 supplies `OtaSoftwareUpdateProviderServer` (`QueryImage`, `ApplyUpdateRequest`, `NotifyUpdateApplied`), `SoftwareUpdateManager.forceUpdate`, `OtaAnnouncements.announceOtaProvider`, `DclOtaUpdateService.store`, and `BdxProtocol`.
+
+The ledger client is offline (`MATTER_DCL_OFFLINE`). A compiled image is parsed locally, then stored for BDX. Matter.js 0.18.0 `updateExistsFor` ignores storage mode `local` unless `allowTestOtaImages` is set, which would also accept test-ledger files. This provider leaves that flag false and stores the file with mode `prod`. The mode is the SDK’s candidate filter. It does not skip the digest check inside `OtaImageReader`, the VID, PID, and SoftwareVersion checks inside `QueryImage`, peer consent, or the secure BDX session. No separate vendor signature is verified, and secure boot is not claimed.
+
+`forceUpdate` announces the provider to the selected peer. The SDK will not announce unless that peer has an active subscription, so the offer turns on a subscription of endpoint 0 attributes only. Temperature Measurement, Relative Humidity Measurement, and actuator clusters are not part of that subscription.
+
+A job is succeeded only after a later Basic Information read returns the image's SoftwareVersion. A finished BDX transfer does not do that. An interrupted transfer is not offered again. A controller restart marks a running job interrupted and does not erase NVS, fabric credentials, or the controller identity. Rollback is not claimed.
+
+No ESP32-H2 has requested an image. The HomePod checklist in `docs/HARDWARE_TEST_PLAN.md` is pending.
 
 ## What the automated tests cover
 
@@ -55,6 +63,9 @@ These checks run without a board:
 - The new-device path reports missing Bluetooth and a missing Thread dataset and does not call commissioning.
 - Source scans reject Temperature Measurement, Relative Humidity, On/Off, and Level Control in the controller and the node screen.
 - API responses keep a sharing code in its own fields and redact the same code from errors.
+- A Matter OTA header is accepted only when the magic, total size, SHA-256 payload digest, and ESP32-H2 chip id all match. A simulated file is rejected.
+- Deployment state changes only from provider events. Success is a SoftwareVersion read equal to the image version. A BDX completion by itself leaves the job running.
+- The Matter.js process stores one local image, arms a BDX peer registration, cancels it, and still has the same root credential bytes. No device received those bytes.
 
 ## What requires a physical ESP32-H2
 
@@ -66,6 +77,8 @@ Nothing below has been observed:
 - Smart-home-first commissioning onto an existing Thread network.
 - Management-first commissioning. Bluetooth and a Thread operational dataset are unavailable on this host, so that path cannot be completed even with a board until both exist.
 - USB boot, OpenThread join, Apple Home, and a second administrator. See `docs/HARDWARE_TEST_PLAN.md`.
+- QueryImage from a device, a BDX byte transfer, ApplyUpdateRequest, reboot, and a SoftwareVersion read of the updated firmware.
+- Apple Home continuing to operate after that update.
 
 ## Hardware verification
 

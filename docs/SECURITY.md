@@ -33,4 +33,4 @@ Pairing codes are removed from API error text and from Matter.js log lines. A co
 
 ## Later requirements (not done)
 
-Encrypted fabric backup, single-target OTA locking, and AI key storage on the server side. The local API already refuses hosts other than `127.0.0.1`.
+OTA job records store the selected node, build, and expected SoftwareVersion. They do not store pairing codes, passcodes, or private keys. One running update is allowed per node. A restart does not delete the controller storage or request a factory reset. Encrypted fabric backup and AI key storage are still later work. The local API already refuses hosts other than `127.0.0.1`.

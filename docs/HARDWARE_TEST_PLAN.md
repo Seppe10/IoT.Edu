@@ -37,6 +37,21 @@ Use an ESP32-H2 that can reach a HomePod mini Thread border router. Every step i
 9. Apple Home still displays and controls the device on its own fabric.
 10. IoT.Edu does not show operational sensor or actuator values.
 
+## OTA from 1.1.0 to 1.2.0
+
+Use the compiled packages already produced by this repository: initial firmware `1.1.0` / SoftwareVersion `2`, update firmware `1.2.0` / SoftwareVersion `3`. The Thread border router is a HomePod mini. Apple Home is the existing controller. IoT.Edu is the second administrator. Every step is **pending**. A unit test, a stored image, or a BDX registration on the Mac does not complete any step.
+
+1. The ESP32-H2 boots with firmware 1.1.0.
+2. Apple Home commissions it.
+3. IoT.Edu joins as an additional Matter administrator.
+4. Both fabrics stay operational.
+5. IoT.Edu reads SoftwareVersion 2.
+6. The OTA Provider is accessible to the device.
+7. The ESP32-H2 requests the image and the BDX transfer finishes.
+8. The device applies firmware 1.2.0 and restarts.
+9. IoT.Edu reconnects and reads SoftwareVersion 3.
+10. Apple Home still works after the update.
+
 ## Later checklist
 
 1. First-time USB flash of a locally built image; confirm boot and expected `sensors` firmware.

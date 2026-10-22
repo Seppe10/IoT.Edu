@@ -113,9 +113,9 @@ textarea { min-height: 90px; }
 }
 .pill.simulated, .pill.running { background: #fff1cc; }
 .pill.compiled { background: #d9e8f8; }
-.pill.hardware_verified, .pill.passed { background: #d9f2e4; }
-.pill.failed, .pill.interrupted, .pill.unknown { background: #f8d7d7; }
-.pill.warning { background: #fff1cc; }
+.pill.hardware_verified, .pill.passed, .pill.observed { background: #d9f2e4; }
+.pill.failed, .pill.interrupted, .pill.unknown, .pill.not_observed { background: #f8d7d7; }
+.pill.warning, .pill.inferred { background: #fff1cc; }
 .log {
   max-height: 320px;
   overflow: auto;

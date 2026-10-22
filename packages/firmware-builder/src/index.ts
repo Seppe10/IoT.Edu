@@ -398,3 +398,5 @@ export function appFitsPartition(appBytes: number, slotBytes: number): Validatio
   }
   return [];
 }
+
+export { encodeMatterOtaImage, inspectMatterOtaImage, ESP32H2_CHIP_ID, type MatterOtaInspection } from "./ota-image.js";

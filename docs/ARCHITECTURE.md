@@ -1,6 +1,6 @@
 # Architecture
 
-Phase 5 adds a persistent Matter.js management controller. USB writing is unchanged and has not been run on a board. OTA transfer is still not running.
+Phase 6 adds the Matter OTA Provider on that same controller. USB writing is unchanged and has not been run on a board. No device has completed an OTA transfer.
 
 ## Intended layers
 
@@ -43,5 +43,6 @@ The browser never runs host OS commands. The local API owns subprocesses (IDF, e
 - Phase 3 connects the Firmware Builder to that pipeline. Mock mode remains for labelled simulations. Native mode generates an isolated workspace under `DATA_DIR`, runs ESP-IDF v5.4.1, and stores the application image, merged USB image, and Matter `.ota` image. Docker mode stays unavailable. A compiled package is not hardware-verified.
 - Phase 4 adds USB writing for a compiled package. The local API builds the command from `flasher_args.json`, refuses erase and simulated packages, and can open a serial monitor afterwards. No board has been written.
 - Phase 5 adds the management controller in `packages/matter-controller`. Live mode uses `@matter/main` 0.18.0 (`ServerNode`, `ControllerBehavior`, `peers.commission`). Keys stay in `$DATA_DIR/matter-controller` with directory mode `0700`. Mock mode remains the test default. Bluetooth commissioning and a Thread operational dataset are unavailable, so a new device is not commissioned. No board has joined the fabric.
+- Phase 6 adds `OtaProviderEndpoint` on that node. The provider uses Matter.js `QueryImage`, `ApplyUpdateRequest`, `NotifyUpdateApplied`, and BDX. Job records store the node id and the expected SoftwareVersion. They do not store keys or pairing codes. One running update is allowed per node.
 
 Figma file `ctgVnYSDl6CAmnc2sXTfKk` could not be read (no edit access on the Figma MCP session). Screen structure follows the specification’s nine management screens. Pixel match to the wireframes is unverified.

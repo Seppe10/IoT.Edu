@@ -6,7 +6,7 @@ The application commissions nodes onto an **IoT.Edu Management** fabric, builds 
 
 ## Current status
 
-**Phase 5 — Matter management controller, hardware still pending.** The desktop app can compile firmware, prepare a USB write, and run a persistent Matter.js 0.18.0 management controller. No ESP32-H2 has been programmed or commissioned from this application. Matter OTA is not running.
+**Phase 6 — Matter OTA Provider, hardware still pending.** The desktop app can compile firmware, prepare a USB write, run a persistent Matter.js 0.18.0 management controller, and offer a compiled Matter OTA image from that controller. No ESP32-H2 has been programmed, commissioned, or updated from this application.
 
 | Capability | Status |
 |---|---|
@@ -19,7 +19,7 @@ The application commissions nodes onto an **IoT.Edu Management** fabric, builds 
 | Native firmware builder and Matter OTA packaging | Done in software. Two packages, `1.1.0` and `1.2.0` |
 | USB writing | Implemented for compiled packages on macOS. No board written yet |
 | Matter management controller | Matter.js 0.18.0. Identity persists. Smart-home-first commissioning is implemented. No device has joined |
-| Matter OTA Provider | Not started |
+| Matter OTA Provider | Matter.js 0.18.0 provider, BDX, and local image storage. No device has requested an image |
 | PostgreSQL / GitHub catalogue | Explicitly out of scope |
 
 ## Supported platform

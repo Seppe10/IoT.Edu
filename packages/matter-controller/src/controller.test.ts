@@ -66,6 +66,28 @@ class FakeTransport implements ManagementTransport {
   }
 
   async close() {}
+
+  async otaProviderStatus() {
+    return { running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true };
+  }
+
+  async beginOta() {
+    throw new MatterOperationError("connection_failed", "The OTA Provider endpoint is not installed.");
+  }
+
+  subscribeOta() {
+    return () => undefined;
+  }
+
+  async listStoredImages() {
+    return [];
+  }
+
+  async storeLocalImage() {}
+
+  async exerciseBdxArm() {
+    return { armed: false, cleared: true };
+  }
 }
 
 async function service() {

@@ -5,6 +5,7 @@ import { MatterOperationError } from "./errors.js";
 import { IDENTITY_FILE, protectStorage } from "./identity.js";
 import { redactSecrets } from "./redact.js";
 import type { ControllerRuntimeInfo, ManagementTransport, ObservedNode, SharingWindow } from "./session.js";
+import { attachOtaProvider, type AnnouncedPeer, type AttachedOta } from "./ota-provider.js";
 
 const MATTER_JS_VERSION = "0.18.0";
 const CONTROLLER_ID = "iotedu-management";
@@ -15,6 +16,7 @@ let active: { directory: string; node: MatterControllerNode; transport: MatterJs
 interface MatterControllerNode {
   start(): Promise<void>;
   close(): Promise<void>;
+  add(definition: unknown): Promise<{ number: number; act<T>(actor: (agent: { get(type: unknown): never }) => Promise<T>): Promise<T> }>;
   state: { basicInformation?: { uniqueId?: string } };
   env: { get(type: unknown): { fabrics?: Array<{ fabricId?: unknown; nodeId?: unknown }>; config?: { rootKeyIdentifier?: unknown } } };
   peers: {
@@ -60,6 +62,7 @@ export function armMatterPlatform(storageDir: string): void {
   config.defaultEnvironmentName = "iotedu";
   config.defaultStoragePath = directory;
   config.defaultConfigFilePath = "matter-config.json";
+  process.env.MATTER_DCL_OFFLINE = "true";
   platformReady = true;
 }
 
@@ -96,8 +99,15 @@ export async function openMatterTransport(storageDir: string, options: { create:
   }) as unknown as MatterControllerNode;
   await node.start();
   await protectStorage(directory);
+  let ota: AttachedOta | null = null;
+  let otaError: string | null = null;
+  try {
+    ota = await attachOtaProvider(node as unknown as Parameters<typeof attachOtaProvider>[0]);
+  } catch (error) {
+    otaError = safeMessage(error);
+  }
   const read = Read as unknown as ReadApi;
-  const transport = new MatterJsTransport(node, FabricAuthority, CertificateAuthority, read, Seconds, directory);
+  const transport = new MatterJsTransport(node, FabricAuthority, CertificateAuthority, read, Seconds, directory, ota, otaError);
   active = { directory, node, transport };
   return transport;
 }
@@ -115,6 +125,8 @@ class MatterJsTransport implements ManagementTransport {
     private readonly read: ReadApi,
     private readonly seconds: (value: number) => unknown,
     private readonly directory: string,
+    private readonly ota: AttachedOta | null,
+    private readonly otaError: string | null,
   ) {}
 
   async ensureStarted(_options: { create: boolean }): Promise<ControllerRuntimeInfo> {
@@ -186,6 +198,39 @@ class MatterJsTransport implements ManagementTransport {
   async close(): Promise<void> {
     await this.node.close();
     if (active?.node === this.node) active = null;
+  }
+
+  async otaProviderStatus() {
+    if (!this.ota) {
+      return { running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true };
+    }
+    return this.ota.status();
+  }
+
+  async beginOta(input: { matterNodeId: string; image: Uint8Array; vendorId: number; productId: number; softwareVersion: number }) {
+    if (!this.ota) {
+      throw new MatterOperationError("connection_failed", this.otaError ?? "The OTA Provider endpoint is not installed.");
+    }
+    const peer = this.find(input.matterNodeId);
+    await this.ota.begin(input, peer as unknown as AnnouncedPeer, this.read(this.read.Attribute({ endpoint: 0 })));
+  }
+
+  subscribeOta(listener: (event: import("@iotedu/contracts").OtaProviderEvent) => void) {
+    return this.ota?.subscribe(listener) ?? (() => undefined);
+  }
+
+  async listStoredImages() {
+    return this.ota?.listImages() ?? [];
+  }
+
+  async storeLocalImage(image: Uint8Array, softwareVersion: number) {
+    if (!this.ota) throw new MatterOperationError("connection_failed", this.otaError ?? "The OTA Provider endpoint is not installed.");
+    await this.ota.storeImage(image, softwareVersion);
+  }
+
+  async exerciseBdxArm() {
+    if (!this.ota) return { armed: false, cleared: true };
+    return this.ota.exerciseBdxArm();
   }
 
   private find(matterNodeId: string): RemotePeer {
