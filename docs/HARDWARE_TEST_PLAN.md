@@ -1,6 +1,6 @@
 # Hardware test plan
 
-No hardware evidence has been collected in this repository. Every item is **pending**. Compiling the reference image and the modular DHT11 image, and implementing the USB write workflow, does not complete any item below.
+No hardware evidence has been collected in this repository. Every item is **pending**. Compiling the reference image and the modular DHT11 image, and implementing the USB write workflow, does not complete any item below. The session record is `docs/PHASE7_VERIFICATION.md`. On 2026-10-22 the development Mac had no ESP32-H2 serial device, so the physical stages stayed blocked.
 
 The Firmware Builder shows the same checklist for a compiled package. With no board programmed, every row stays unknown or is absent. Do not mark a row passed from a unit test or a simulated session.
 

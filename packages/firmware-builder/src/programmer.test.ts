@@ -13,6 +13,7 @@ import {
   isAllowedSerialPort,
   packageProgrammingBlock,
   redactSerialLog,
+  probeChip,
   runUsbWrite,
   startupChecks,
   writeDiagnostic,
@@ -340,5 +341,33 @@ describe("USB programmer", () => {
     expect(first.find((item) => item.id === "version")?.detail).toContain("1.1.0");
     expect(second.find((item) => item.id === "version")?.detail).toContain("1.2.0");
     expect(first.find((item) => item.id === "version")?.detail).not.toContain("1.2.0");
+  });
+
+  it("identifies an ESP32-H2 without starting a flash write", async () => {
+    const calls: string[][] = [];
+    const executor: ToolExecutor = {
+      async run(args) {
+        calls.push(args);
+        return { code: 0, text: "Detecting chip type... ESP32-H2\n", cancelled: false };
+      },
+    };
+    const result = await probeChip({ repoRoot, port: "/dev/cu.usbmodem101" }, executor);
+    expect(result.accepted).toBe(true);
+    expect(calls).toEqual([["chip-id", "/dev/cu.usbmodem101"]]);
+  });
+
+  it("rejects a probe that does not report ESP32-H2 and does not write", async () => {
+    const calls: string[][] = [];
+    const executor: ToolExecutor = {
+      async run(args) {
+        calls.push(args);
+        return { code: 2, text: "This chip is ESP32-C6, not ESP32-H2.\n", cancelled: false };
+      },
+    };
+    const rejected = await probeChip({ repoRoot, port: "/dev/cu.usbmodem101" }, executor);
+    const skipped = await probeChip({ repoRoot, port: "/tmp/not-a-port" }, executor);
+    expect(rejected.accepted).toBe(false);
+    expect(skipped.accepted).toBe(false);
+    expect(calls).toEqual([["chip-id", "/dev/cu.usbmodem101"]]);
   });
 });

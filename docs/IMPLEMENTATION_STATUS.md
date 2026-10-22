@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-10-22 (Phase 6 Matter OTA Provider; no board has been programmed, commissioned, or updated).
+Last updated: 2026-10-22 (Phase 7 hardware verification started; no ESP32-H2 was connected, so physical stages are blocked).
 
 ## Phase 0 gate
 
@@ -236,3 +236,7 @@ npm run typecheck # passed for all six workspaces
 Matter.js 0.18.0 does not select storage mode `local` during `QueryImage` unless test-ledger images are also allowed. This provider stores the validated file with mode `prod` and keeps the ledger client offline. The mode does not skip the image digest, VID, PID, SoftwareVersion, consent, or the secure BDX session. The SDK also refuses to announce a provider until the peer has an active subscription, so an offer subscribes to endpoint 0 attributes only.
 
 `docs/PHASE2_DATABASE.md` is a separate design note for a future PostgreSQL catalogue and GitHub client. The running application has no PostgreSQL client and no GitHub catalogue client.
+
+### Phase 7
+
+**Software workflow only. Physical verification is still pending.** The Hardware verification screen lists stages A–E and records Pass, Fail, Blocked, or Not tested from the local API. A chip probe runs `chip-id` and does not write flash. The 1.1.0 write stays disabled until that probe reports ESP32-H2 and the operator confirms the listed flash regions. The evidence for this session is in `docs/PHASE7_VERIFICATION.md`. No board was programmed, commissioned, or updated. Phase 7 is not complete.

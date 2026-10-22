@@ -10,9 +10,11 @@ import {
   packageProgrammingBlock,
   redactSerialLog,
   runSerialMonitor,
+  probeChip,
   runUsbWrite,
   startupChecks,
   type FlashArguments,
+  type FlashPlan,
   type UsbRunnerResult,
   type UsbRunnerSpec,
 } from "@iotedu/firmware-builder/programmer";
@@ -33,6 +35,7 @@ export class ProgrammerError extends Error {
 export type UsbRunner = (spec: UsbRunnerSpec) => Promise<UsbRunnerResult>;
 export type MonitorRunner = typeof runSerialMonitor;
 export type PortLister = () => Promise<string[]>;
+export type ChipProbe = typeof probeChip;
 
 const REQUIRED = ["bootloader.bin", "sensors.bin", "partition-table.bin", "ota_data_initial.bin", "usb-image.bin", "flasher_args.json"];
 
@@ -58,6 +61,7 @@ export class LocalProgrammerService {
     private readonly runWrite: UsbRunner = runUsbWrite,
     private readonly runMonitor: MonitorRunner = runSerialMonitor,
     private readonly listPorts: PortLister = listSerialPorts,
+    private readonly identifyChip: ChipProbe = probeChip,
   ) {
     this.sessions = new JsonJobRepository(path.join(dataDir, "programmer-sessions.json"));
   }
@@ -95,11 +99,62 @@ export class LocalProgrammerService {
     return this.listPorts();
   }
 
+  async probe(port: string): Promise<{ port: string; accepted: boolean; detail: string }> {
+    if (!isAllowedSerialPort(port)) {
+      throw new ProgrammerError("Choose a local macOS USB serial device.", 400, "port_rejected");
+    }
+    const available = await this.listPorts();
+    if (!available.includes(port)) {
+      throw new ProgrammerError("That serial port is not currently connected.", 400, "port_missing");
+    }
+    if (!this.nativeAvailable) {
+      throw new ProgrammerError("A chip probe needs the configured ESP-IDF v5.4.1 environment.", 400, "toolchain_not_configured");
+    }
+    if (this.ports.has(port)) {
+      throw new ProgrammerError("This device already has a write or monitor in progress.", 409, "port_busy");
+    }
+    this.ports.set(port, "probe");
+    try {
+      const result = await this.identifyChip({ repoRoot: this.repoRoot, port });
+      const detail = result.text || (result.accepted
+        ? "ESP32-H2 responded."
+        : "The connected chip is not an ESP32-H2.");
+      return { port, accepted: result.accepted, detail };
+    } finally {
+      this.ports.delete(port);
+    }
+  }
+
+  async describeWrite(buildId: string, port: string): Promise<{
+    buildId: string;
+    softwareVersion: number;
+    softwareVersionString: string;
+    regions: Array<{ offset: string; artifact: string; bytes: number }>;
+    preserved: string[];
+  }> {
+    await this.rejectUnusablePackage(buildId);
+    if (!isAllowedSerialPort(port)) {
+      throw new ProgrammerError("Choose a local macOS USB serial device.", 400, "port_rejected");
+    }
+    const available = await this.listPorts();
+    if (!available.includes(port)) {
+      throw new ProgrammerError("That serial port is not currently connected.", 400, "port_missing");
+    }
+    const { job, plan } = await this.preparePlan(buildId, port);
+    if (!plan.ok) {
+      throw new ProgrammerError(plan.issues[0]?.message ?? "The package is not safe to write.", 400, plan.issues[0]?.code ?? "layout_rejected");
+    }
+    return {
+      buildId: job.id,
+      softwareVersion: job.request.softwareVersion,
+      softwareVersionString: job.request.softwareVersionString,
+      regions: plan.regions,
+      preserved: ["nvs", "nvs_keys", "fctry", "esp_secure_cert", "phy_init"],
+    };
+  }
+
   async start(input: ProgramRequest): Promise<ProgramSession> {
-    const job = await this.builds.get(input.buildId);
-    if (!job) throw new ProgrammerError("Build not found.", 404, "not_found");
-    const blocked = packageProgrammingBlock(job);
-    if (blocked) throw new ProgrammerError(blocked.message, blocked.code === "simulated_package" ? 409 : 400, blocked.code);
+    await this.rejectUnusablePackage(input.buildId);
     if (input.intent === "commissioned_maintenance" && input.acknowledgeCommissioned !== true) {
       throw new ProgrammerError(
         "Updating a commissioned node over USB needs an extra confirmation. This is not a Matter OTA update.",
@@ -120,25 +175,7 @@ export class LocalProgrammerService {
     if (this.ports.has(input.port)) {
       throw new ProgrammerError("This device already has a write or monitor in progress.", 409, "port_busy");
     }
-
-    const artifactDir = this.artifactDirectory(job);
-    const files: Record<string, Buffer> = {};
-    for (const name of REQUIRED) {
-      if (name === "flasher_args.json") continue;
-      files[name] = await readFile(path.join(artifactDir, name));
-    }
-    const flasher = JSON.parse(await readFile(path.join(artifactDir, "flasher_args.json"), "utf8")) as FlashArguments;
-    const layout = await loadReferenceLayout(this.repoRoot, this.profile);
-    const plan = buildWritePlan({
-      flasher,
-      artifactDir,
-      port: input.port,
-      partitions: layout.partitions,
-      bootloaderOffset: this.profile.bootloaderOffset,
-      partitionTableOffset: this.profile.partitionTableOffset,
-      flashSizeBytes: this.profile.flashSizeBytes,
-      files,
-    });
+    const { job, plan } = await this.preparePlan(input.buildId, input.port);
     if (!plan.ok) {
       throw new ProgrammerError(plan.issues[0]?.message ?? "The package is not safe to write.", 400, plan.issues[0]?.code ?? "layout_rejected");
     }
@@ -243,6 +280,37 @@ export class LocalProgrammerService {
     } catch {
       return null;
     }
+  }
+
+  private async rejectUnusablePackage(buildId: string): Promise<BuildJob> {
+    const job = await this.builds.get(buildId);
+    if (!job) throw new ProgrammerError("Build not found.", 404, "not_found");
+    const blocked = packageProgrammingBlock(job);
+    if (blocked) throw new ProgrammerError(blocked.message, blocked.code === "simulated_package" ? 409 : 400, blocked.code);
+    return job;
+  }
+
+  private async preparePlan(buildId: string, port: string): Promise<{ job: BuildJob; plan: FlashPlan }> {
+    const job = await this.rejectUnusablePackage(buildId);
+    const artifactDir = this.artifactDirectory(job);
+    const files: Record<string, Buffer> = {};
+    for (const name of REQUIRED) {
+      if (name === "flasher_args.json") continue;
+      files[name] = await readFile(path.join(artifactDir, name));
+    }
+    const flasher = JSON.parse(await readFile(path.join(artifactDir, "flasher_args.json"), "utf8")) as FlashArguments;
+    const layout = await loadReferenceLayout(this.repoRoot, this.profile);
+    const plan = buildWritePlan({
+      flasher,
+      artifactDir,
+      port,
+      partitions: layout.partitions,
+      bootloaderOffset: this.profile.bootloaderOffset,
+      partitionTableOffset: this.profile.partitionTableOffset,
+      flashSizeBytes: this.profile.flashSizeBytes,
+      files,
+    });
+    return { job, plan };
   }
 
   private artifactDirectory(job: BuildJob): string {

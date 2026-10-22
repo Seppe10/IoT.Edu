@@ -38,6 +38,7 @@ export interface FlashPlan {
   ok: boolean;
   issues: ValidationIssue[];
   args: string[];
+  regions: Array<{ offset: string; artifact: string; bytes: number }>;
 }
 
 export interface ToolRun {
@@ -155,6 +156,23 @@ export function redactSerialLog(text: string): string {
 
 export function chipProbeAccepted(exitCode: number, output: string): boolean {
   return exitCode === 0 && /ESP32-H2/i.test(output);
+}
+
+export async function probeChip(
+  spec: { repoRoot: string; port: string; signal?: AbortSignal },
+  executor?: ToolExecutor,
+): Promise<{ accepted: boolean; text: string }> {
+  if (!isAllowedSerialPort(spec.port)) {
+    return { accepted: false, text: "The serial port is not an allowed local USB device." };
+  }
+  const tool = executor ?? defaultExecutor(path.join(spec.repoRoot, "scripts/idf_exec.sh"));
+  const controller = new AbortController();
+  const probe = await runTimed(tool, ["chip-id", spec.port], spec.signal ?? controller.signal, () => undefined, 20_000);
+  const text = redactSerialLog(probe.text).trim();
+  if (probe.timedOut) {
+    return { accepted: false, text: text || "The chip probe timed out before the board answered." };
+  }
+  return { accepted: chipProbeAccepted(probe.code, text), text };
 }
 
 function issue(code: string, message: string): ValidationIssue {
@@ -352,7 +370,8 @@ export function buildWritePlan(input: {
   if (args.some((arg) => arg.endsWith("usb-image.bin") || forbiddenToken(arg))) {
     issues.push(issue("erase_rejected", "The write command included an erase request or the merged image."));
   }
-  return { ok: issues.length === 0, issues, args: issues.length === 0 ? args : [] };
+  const regions = pieces.map((piece) => ({ offset: piece.offsetText, artifact: piece.artifact, bytes: piece.bytes.length }));
+  return { ok: issues.length === 0, issues, args: issues.length === 0 ? args : [], regions: issues.length === 0 ? regions : [] };
 }
 
 export function startupChecks(input: {

@@ -6,7 +6,7 @@ The application commissions nodes onto an **IoT.Edu Management** fabric, builds 
 
 ## Current status
 
-**Phase 6 — Matter OTA Provider, hardware still pending.** The desktop app can compile firmware, prepare a USB write, run a persistent Matter.js 0.18.0 management controller, and offer a compiled Matter OTA image from that controller. No ESP32-H2 has been programmed, commissioned, or updated from this application.
+**Phase 7 — hardware verification in progress. Physical verification is still pending.** The Hardware verification screen can detect a port, probe the chip, and write firmware 1.1.0 only after confirmation. No ESP32-H2 has been programmed, commissioned, or updated. Automated tests do not complete this phase.
 
 | Capability | Status |
 |---|---|

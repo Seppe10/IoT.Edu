@@ -3,6 +3,7 @@ import { AiPage } from "./pages/AiPage";
 import { BuilderPage } from "./pages/BuilderPage";
 import { CatalogPage } from "./pages/CatalogPage";
 import { DeploymentPage } from "./pages/DeploymentPage";
+import { HardwarePage } from "./pages/HardwarePage";
 import { NodePage } from "./pages/NodePage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PairPage } from "./pages/PairPage";
@@ -16,6 +17,7 @@ const links = [
   ["/builder", "Firmware Builder"],
   ["/ai", "AI-Assisted Development"],
   ["/ota", "OTA Preflight"],
+  ["/verify", "Hardware verification"],
   ["/settings", "Settings"],
 ] as const;
 
@@ -46,6 +48,7 @@ export function App() {
           <Route path="/ai" element={<AiPage />} />
           <Route path="/ota" element={<PreflightPage />} />
           <Route path="/ota/jobs/:id" element={<DeploymentPage />} />
+          <Route path="/verify" element={<HardwarePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>

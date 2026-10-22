@@ -244,6 +244,28 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
   });
 
   app.get("/api/programmer/ports", async () => ({ ports: await programmer.portsAvailable() }));
+  app.post("/api/programmer/probe", async (request, reply) => {
+    const body = request.body as { port?: string };
+    try {
+      return await programmer.probe(typeof body.port === "string" ? body.port : "");
+    } catch (error) {
+      if (error instanceof ProgrammerError) {
+        return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+      }
+      throw error;
+    }
+  });
+  app.post("/api/programmer/plan", async (request, reply) => {
+    const body = request.body as { buildId?: string; port?: string };
+    try {
+      return await programmer.describeWrite(typeof body.buildId === "string" ? body.buildId : "", typeof body.port === "string" ? body.port : "");
+    } catch (error) {
+      if (error instanceof ProgrammerError) {
+        return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+      }
+      throw error;
+    }
+  });
   app.post("/api/programmer/sessions", async (request, reply) => {
     try {
       const session = await programmer.start(programRequestSchema.parse(request.body));
