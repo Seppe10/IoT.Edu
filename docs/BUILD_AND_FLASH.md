@@ -47,7 +47,21 @@ With `IDF_PATH`, `ESP_MATTER_PATH`, and `IDF_ACTIVATE` set, the local API accept
 
 The package contains the application image, bootloader, partition table, OTA data initialiser, merged USB image, Matter `.ota` image, `flasher_args.json`, sdkconfig, dependency lock, build log, and SHA-256 sums. `ota_image_tool.py create` and `show` supply the OTA header. The application `.bin` is not a Matter OTA image.
 
-Mock mode still writes `SIMULATED.txt` and refuses download as firmware. Docker mode is rejected. USB programming and Matter OTA transfer are not started by the builder.
+Mock mode still writes `SIMULATED.txt` and refuses download as firmware. Docker mode is rejected. A compiled package can be selected for USB writing. Matter OTA transfer is not started by the builder.
+
+## USB writing
+
+macOS uses the local ESP-IDF v5.4.1 tool through `scripts/idf_exec.sh`. The browser does not open the serial port. WebSerial was not used: the desktop UI is a page on `127.0.0.1`, and the reliable path on this Mac is the already installed tool with the package metadata.
+
+The write command is built from `flasher_args.json`: chip `esp32h2`, the recorded flash mode, size, and frequency, and the recorded offsets for the bootloader, partition table, `ota_data_initial.bin`, and `sensors.bin`. Baud is fixed at 115200. The merged `usb-image.bin` is checked against those pieces and is not written, because its padding covers NVS, factory data, and the secure-cert partition.
+
+`--erase-all`, `erase_flash`, and `erase_region` are rejected. NVS is not an argument. One write or monitor may use a given port at a time. The accepted port names are `/dev/cu.usbmodem*`, `/dev/cu.usbserial*`, `/dev/cu.wchusbserial*`, and `/dev/cu.SLAB_USBtoUART*`.
+
+Before changing flash, the tool probes the connected chip and continues only when the probe reports ESP32-H2. The board is then reset into download mode. If that fails, hold BOOT (GPIO9), press and release RESET, release BOOT, and try again. After a successful write the tool hard-resets the board.
+
+The serial monitor is optional and runs at 115200. Saved logs are redacted. Observed lines can mark boot, Matter, OpenThread, DHT11 task, and version checks. GPIO9 factory reset stays unknown until someone performs it on a board when it is safe. A successful write does not change the package from `compiled` to hardware-verified, and it does not commission a fabric.
+
+No board was written from this application in Phase 4.
 
 ## Matter OTA image
 

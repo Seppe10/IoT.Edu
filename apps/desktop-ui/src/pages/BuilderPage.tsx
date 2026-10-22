@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { BuildJob, ComponentManifest, FirmwareVerification, ManagedNode, ValidationResult } from "@iotedu/contracts";
 import { ApiError, api } from "../api";
+import { ProgrammerPanel } from "./ProgrammerPanel";
 
 interface LayoutResponse {
   layoutId: string;
@@ -251,7 +252,7 @@ export function BuilderPage() {
       {job && (
         <div className="panel stack">
           <h2>Package <span className={`pill ${job.verification ?? job.status}`}>{verificationLabel(job)}</span></h2>
-          {job.verification === "compiled" && <p>Hardware verification pending. This page does not program a board or offer the image to a node.</p>}
+          {job.verification === "compiled" && <p>Hardware verification pending. The USB section below can write this compiled image. A finished write is not Matter commissioning.</p>}
           {job.verification === "simulated" && <p>This record is simulated. It cannot be programmed or sent as an update.</p>}
           <p>Status {job.status}.{job.durationMs != null ? ` Duration ${Math.round(job.durationMs / 1000)}s.` : ""}</p>
           <pre className="log" aria-live="polite" tabIndex={0}>{logText || job.logs.join("\n")}</pre>
@@ -269,6 +270,7 @@ export function BuilderPage() {
           </ul>
         </div>
       )}
+      {job && <ProgrammerPanel key={job.id} job={job} />}
       {history.length > 0 && (
         <div className="panel">
           <h2>Build records</h2>

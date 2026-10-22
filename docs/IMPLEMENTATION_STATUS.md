@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-10-21 (Phase 3 native firmware builder; hardware unverified).
+Last updated: 2026-10-22 (Phase 4 USB write workflow; no board has been programmed).
 
 ## Phase 0 gate
 
@@ -148,13 +148,38 @@ npm run typecheck # passed for all six workspaces
 
 ## Hardware verification
 
-None. No USB flash, no live commissioning, no live SoftwareVersion read, no Matter OTA transfer, no GPIO9 reset, and no DHT11 reading has been observed. Compilation and a valid OTA header do not satisfy `docs/HARDWARE_TEST_PLAN.md`.
+None. No USB write has been performed, no live commissioning, no live SoftwareVersion read, no Matter OTA transfer, no GPIO9 reset, and no DHT11 reading has been observed. Compilation, a valid OTA header, and a software flashing workflow do not satisfy `docs/HARDWARE_TEST_PLAN.md`.
+
+## Phase 4
+
+**Met for the software workflow.** The Firmware Builder can prepare a USB write of a compiled ESP32-H2 package. The local API uses the package `flasher_args.json` offsets and the individual images. It does not write the merged image, because that image’s padding covers NVS. Full-chip erase is rejected. Simulated packages are rejected. A finished write stays `compiled`; it is not marked hardware-verified.
+
+No ESP32-H2 was programmed during this phase. Serial startup was not observed on hardware. The in-app checklist therefore stays pending.
+
+### Commands
+
+```text
+npm test          # 45 vitest tests, all passed
+npm run typecheck # passed for all six workspaces
+```
+
+| Suite | Result |
+|---|---|
+| `@iotedu/contracts` (3) | Passed |
+| `@iotedu/catalog` (3) | Passed |
+| `@iotedu/firmware-builder` (21) | Passed |
+| `@iotedu/matter-controller` (1) | Passed |
+| `@iotedu/local-api` (16) | Passed |
+| `@iotedu/desktop-ui` (1) | Passed |
+| Typecheck, all workspaces | Passed |
+| USB write on a connected ESP32-H2 | Not run |
+| Serial startup capture | Not run |
 
 ## Remaining limitations
 
 - Docker builds are unavailable.
 - The OTA Provider is not running, so a compiled `.ota` file still cannot be deployed. Preflight keeps unknown live checks blocking.
-- USB programming is not implemented. The merged image can be downloaded and has not been written to a board.
+- USB writing is implemented for macOS and a compiled package. No board was written in Phase 4, so startup, Matter, OpenThread, DHT11, and GPIO9 remain pending.
 - Test VID/PID and example DAC providers.
 - `esp_bsp_generic` still pulls the same unused LCD/LVGL components. The dependency lock was not changed.
 - Unknown Kconfig symbol `ENABLE_WIFI_AP` in defaults (warning only).
@@ -165,6 +190,6 @@ None. No USB flash, no live commissioning, no live SoftwareVersion read, no Matt
 
 ## Not started
 
-Phase 4 has not been started.
+Phase 5 has not been started. The Matter controller and OTA Provider are unchanged.
 
 `docs/PHASE2_DATABASE.md` is a separate design note for a future PostgreSQL catalogue and GitHub client. The running application has no PostgreSQL client and no GitHub catalogue client.

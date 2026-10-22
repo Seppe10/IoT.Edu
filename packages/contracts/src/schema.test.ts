@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { componentManifestSchema, firmwareBuildRequestSchema } from "./index.js";
+import { componentManifestSchema, firmwareBuildRequestSchema, programRequestSchema } from "./index.js";
 
 describe("contracts", () => {
   it("rejects a manifest that claims a remote source", () => {
@@ -34,5 +34,25 @@ describe("contracts", () => {
       confirm: true,
     });
     expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a full-chip erase on a USB write", () => {
+    const parsed = programRequestSchema.safeParse({
+      buildId: "compiled-package",
+      port: "/dev/cu.usbmodem1101",
+      intent: "initial_install",
+      confirm: true,
+      preserveNvs: true,
+      eraseAll: true,
+    });
+    expect(parsed.success).toBe(false);
+    const omitted = programRequestSchema.safeParse({
+      buildId: "compiled-package",
+      port: "/dev/cu.usbmodem1101",
+      intent: "initial_install",
+      confirm: true,
+      preserveNvs: false,
+    });
+    expect(omitted.success).toBe(false);
   });
 });

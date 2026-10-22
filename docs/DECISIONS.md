@@ -147,4 +147,22 @@ Each package has its own workspace, and a second invocation of that workspace is
 
 ### API source scan
 
-`apps/local-api/src/api.test.ts` scans `apps/` for flash, esptool, and subprocess usage. It previously also scanned `packages/`, which matched the comment that names `ota_image_tool.py` in the version-sdkconfig helper. The desktop and API sources are still the scan target. Mock artifacts remain `SIMULATED.txt` with `deployable: false`.
+`apps/local-api/src/api.test.ts` scans `apps/` for the USB tool and subprocess usage. The desktop and API sources are still the scan target. The USB runner lives in `packages/firmware-builder`. Mock artifacts remain `SIMULATED.txt` with `deployable: false`.
+
+## Phase 4
+
+### Local USB tool, not WebSerial
+
+The Firmware Builder runs in a browser tab. On this Mac the write is performed by the ESP-IDF v5.4.1 tool already used to merge images, invoked through `scripts/idf_exec.sh` with an argument array. The browser never receives a shell. WebSerial was not added.
+
+### The merged image is not what gets written
+
+`usb-image.bin` is a padded image from offset 0 through the application. The padding covers NVS, `nvs_keys`, `phy_init`, factory data, and `esp_secure_cert`. Writing that file would erase Matter fabric data and the secure-cert partition. The writer checks that the merged image contains the bootloader, partition table, OTA selection data, and application at the recorded offsets, then writes only those four files. OTA selection data is updated so the bootloader selects the image. NVS is left in place.
+
+### Confirmation and one device at a time
+
+A write requires `confirm` and `preserveNvs: true`. A commissioned-node write requires a second acknowledgement. The request schema rejects any extra erase field. Two operations cannot share a port. Restarting the API marks an in-progress write interrupted and does not call it a success.
+
+### Startup evidence is not hardware verification
+
+Serial text can mark individual checklist rows when the expected lines appear. GPIO9 factory reset stays unknown. The package record stays `compiled`. The Matter management service is still the Phase 1 stand-in, so a USB write cannot join or disturb a future management fabric except by rebooting a node whose NVS is left intact.

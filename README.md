@@ -6,17 +6,19 @@ The application commissions nodes onto an **IoT.Edu Management** fabric, builds 
 
 ## Current status
 
-**Phase 1 — local desktop shell.** Phase 0 firmware sources are unchanged. Commissioning, native compilation, USB flash, and Matter OTA are labelled mocks until later phases.
+**Phase 4 — USB write workflow, hardware still pending.** The desktop app can compile the modular DHT11 firmware and prepare a USB write of a compiled package. Mock packages cannot be written. No ESP32-H2 has been programmed from this application. Commissioning and Matter OTA remain simulated.
 
 | Capability | Status |
 |---|---|
 | Reference firmware import (allowlist + hashes) | Done |
 | Source audit | Done (`docs/SOURCE_AUDIT.md`) |
 | Baseline ESP-IDF compile of imported sources | **Passed** (`sensors.bin` 1,591,552 bytes, 19% OTA slot free) |
-| Desktop UI and local API | Done for Phase 1 (mock commissioning, builds, and OTA) |
+| Desktop UI and local API | Done |
 | Local JSON catalogue | Done (no PostgreSQL, no GitHub) |
-| Modular DHT11 firmware | Not started (original sources preserved) |
-| USB flashing / Matter controller / real OTA Provider | Not started |
+| Modular DHT11 firmware | Compiled with ESP-IDF v5.4.1. Not hardware-verified |
+| Native firmware builder and Matter OTA packaging | Done in software. Two packages, `1.1.0` and `1.2.0` |
+| USB writing | Implemented for compiled packages on macOS. No board written yet |
+| Matter controller / real OTA Provider | Not started |
 | PostgreSQL / GitHub catalogue | Explicitly out of scope |
 
 ## Supported platform
@@ -36,7 +38,7 @@ iotedu/
 ├── apps/local-api/               Fastify API (127.0.0.1:3847)
 ├── packages/contracts/           Zod request and record contracts
 ├── packages/catalog/             Read-only local catalogue
-├── packages/firmware-builder/    Partition, GPIO, and mock package checks
+├── packages/firmware-builder/    Partition checks, native builds, and USB write planning
 ├── packages/matter-controller/   Mock management service (no controller identity)
 ├── catalog/manifests/            Component JSON
 ├── board-profiles/esp32h2.json

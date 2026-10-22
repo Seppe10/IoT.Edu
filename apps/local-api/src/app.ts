@@ -8,6 +8,7 @@ import {
   commissionRequestSchema,
   firmwareBuildRequestSchema,
   otaRequestSchema,
+  programRequestSchema,
   renameNodeSchema,
   type BuildJob,
   type OtaJob,
@@ -16,6 +17,7 @@ import { inspectToolchain, loadReferenceLayout, type BoardProfile } from "@ioted
 import { MockMatterManagementService } from "@iotedu/matter-controller";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
+import { LocalProgrammerService, ProgrammerError, type MonitorRunner, type PortLister, type UsbRunner } from "./programmer-service.js";
 import { LocalFirmwareBuildService, LocalOtaService, type NativeRunner } from "./services.js";
 import { JsonJobRepository, JsonNodeRepository, appendAudit, redact } from "./store.js";
 
@@ -33,6 +35,9 @@ export interface AppPaths {
   profile: BoardProfile;
   nativeAvailable?: boolean;
   runNative?: NativeRunner;
+  runProgram?: UsbRunner;
+  runMonitor?: MonitorRunner;
+  listPorts?: PortLister;
 }
 
 export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
@@ -49,6 +54,17 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     runNative: paths.runNative,
   });
   await firmware.recoverInterrupted();
+  const programmer = new LocalProgrammerService(
+    builds,
+    paths.dataDir,
+    paths.repoRoot,
+    paths.profile,
+    nativeAvailable,
+    paths.runProgram,
+    paths.runMonitor,
+    paths.listPorts,
+  );
+  await programmer.recoverInterrupted();
   const ota = new LocalOtaService(builds, otas, nodes, paths.profile, paths.repoRoot);
   const auditFile = path.join(paths.dataDir, "audit.jsonl");
 
@@ -76,9 +92,11 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     const report = await matter.getCapabilities();
     if (nativeAvailable) {
       report.firmwareBuild = "available";
+      report.usbFlash = "available";
       report.notes = [
         ...report.notes,
         "Native firmware compilation is available. A compiled package is not hardware-verified.",
+        "USB writing is available for a compiled ESP32-H2 package. NVS is not erased. A finished write is not hardware verification.",
       ];
     }
     return report;
@@ -210,6 +228,74 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     return reply.header("content-disposition", `attachment; filename="${safeName}"`).type("application/octet-stream").send(bytes);
   });
 
+  app.get("/api/programmer/ports", async () => ({ ports: await programmer.portsAvailable() }));
+  app.post("/api/programmer/sessions", async (request, reply) => {
+    try {
+      const session = await programmer.start(programRequestSchema.parse(request.body));
+      await appendAudit(auditFile, {
+        action: "program",
+        id: session.id,
+        buildId: session.buildId,
+        status: session.status,
+        eraseAll: false,
+      });
+      const code = session.status === "running" ? 202 : session.status === "succeeded" ? 201 : 200;
+      return reply.code(code).send({ session });
+    } catch (error) {
+      if (error instanceof ProgrammerError) {
+        return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+      }
+      throw error;
+    }
+  });
+  app.get("/api/programmer/sessions", async () => ({ sessions: await programmer.list() }));
+  app.get("/api/programmer/sessions/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const session = await programmer.get(id);
+    if (!session) return reply.code(404).send({ error: { code: "not_found", message: "Programming session not found" } });
+    return { session };
+  });
+  app.post("/api/programmer/sessions/:id/cancel", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const session = await programmer.cancel(id);
+    if (!session) return reply.code(404).send({ error: { code: "not_found", message: "Programming session not found" } });
+    return { session };
+  });
+  app.get("/api/programmer/sessions/:id/log", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const log = await programmer.readLog(id);
+    if (!log) return reply.code(404).send({ error: { code: "not_found", message: "Programming session not found" } });
+    return log;
+  });
+  app.post("/api/programmer/sessions/:id/monitor", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      return { session: await programmer.monitor(id) };
+    } catch (error) {
+      if (error instanceof ProgrammerError) {
+        return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+      }
+      throw error;
+    }
+  });
+  app.post("/api/programmer/sessions/:id/save-log", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      return await programmer.saveLog(id);
+    } catch (error) {
+      if (error instanceof ProgrammerError) {
+        return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+      }
+      throw error;
+    }
+  });
+  app.get("/api/programmer/sessions/:id/saved-log", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const text = await programmer.savedLog(id);
+    if (text === null) return reply.code(404).send({ error: { code: "not_found", message: "No saved log" } });
+    return reply.type("text/plain").send(text);
+  });
+
   app.post("/api/uploads", async (request, reply) => {
     const body = request.body as { fileName?: string; content?: string };
     const fileName = path.basename(body.fileName ?? "");
@@ -279,7 +365,9 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
       nativeAvailable
         ? "Native builds use the configured ESP-IDF v5.4.1 environment. Docker remains unavailable."
         : "Native builds need IDF_PATH, ESP_MATTER_PATH, and IDF_ACTIVATE. Mock packages remain available.",
-      "A compiled package is not hardware-verified. USB programming and Matter OTA deployment stay disabled.",
+      nativeAvailable
+        ? "A compiled package can be written over USB. NVS is not erased. Writing the image does not verify startup or commission the node."
+        : "USB writing needs the same ESP-IDF environment as a native build. Simulated packages cannot be written.",
       "No Matter controller identity exists. A missing credential file is not replaced automatically.",
     ],
   }));

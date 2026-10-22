@@ -1,6 +1,6 @@
 # Architecture
 
-Phase 1 implements the desktop shell and local records. Matter, native compilation, USB flash, and OTA transfer stay behind the same interfaces and are not live yet.
+Phase 4 adds a USB write workflow for compiled packages. Matter commissioning and OTA transfer stay simulated. A USB write has not been run on a board.
 
 ## Intended layers
 
@@ -14,13 +14,13 @@ Phase 1 implements the desktop shell and local records. Matter, native compilati
 | Records | Atomic JSON under `DATA_DIR` | Nodes, packages, jobs, preferences |
 | Secrets | Protected storage, not ordinary JSON | Controller keys, fabric credentials, Thread datasets, AI keys |
 | AI | Optional server-side adapter | Draft components; disabled by default |
-| USB flash | WebSerial or documented esptool fallback | First-time install only |
+| USB flash | Local ESP-IDF tool on macOS, using package metadata | Compiled packages only. NVS is not erased. Hardware verification pending |
 
 ## Storage interfaces (Phase 1)
 
 - `CatalogRepository` — `LocalCatalogRepository` reads `catalog/manifests/*.json`
 - `NodeRepository` — atomic JSON under `DATA_DIR`
-- `FirmwareBuildService` — mock packages only; native and Docker modes are rejected
+- `FirmwareBuildService` — mock packages and native ESP-IDF builds. USB writing accepts a compiled package and rejects a simulated one.
 - `MatterManagementService` — simulated commissioning; no session and no invented node id
 - `OtaDeploymentService` — preflight blocks unknown mandatory checks; simulated artifacts are not deployable
 
@@ -41,5 +41,6 @@ The browser never runs host OS commands. The local API owns subprocesses (IDF, e
 - Reference firmware under `reference/matter-dht11/` is the Phase 0 import and is left unmodified.
 - Phase 2 adds `firmware/components/iotedu_core` and `firmware/components/iotedu_dht11`. `scripts/build_modular_dht11.sh` generates a gitignored workspace and compiles it with ESP-IDF.
 - Phase 3 connects the Firmware Builder to that pipeline. Mock mode remains for labelled simulations. Native mode generates an isolated workspace under `DATA_DIR`, runs ESP-IDF v5.4.1, and stores the application image, merged USB image, and Matter `.ota` image. Docker mode stays unavailable. A compiled package is not hardware-verified.
+- Phase 4 adds USB writing for a compiled package. The local API builds the command from `flasher_args.json`, refuses erase and simulated packages, and can open a serial monitor afterwards. The Matter controller and OTA Provider are unchanged. No board has been written.
 
 Figma file `ctgVnYSDl6CAmnc2sXTfKk` could not be read (no edit access on the Figma MCP session). Screen structure follows the specification’s nine management screens. Pixel match to the wireframes is unverified.

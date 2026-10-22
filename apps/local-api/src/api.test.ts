@@ -1,17 +1,27 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BuildJob, FirmwareBuildRequest } from "@iotedu/contracts";
+import type { BuildJob, FirmwareBuildRequest, ProgramSession } from "@iotedu/contracts";
 import type { NativeBuildResult, NativeBuildSpec } from "@iotedu/firmware-builder/native";
+import type { UsbRunnerResult, UsbRunnerSpec } from "@iotedu/firmware-builder/programmer";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp, readBoardProfile } from "./app.js";
+import type { MonitorRunner, PortLister, UsbRunner } from "./programmer-service.js";
 import type { NativeRunner } from "./services.js";
 import { JsonNodeRepository } from "./store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
-async function createApp(options: { nativeAvailable?: boolean; runNative?: NativeRunner; dataDir?: string } = {}) {
+async function createApp(options: {
+  nativeAvailable?: boolean;
+  runNative?: NativeRunner;
+  dataDir?: string;
+  runProgram?: UsbRunner;
+  runMonitor?: MonitorRunner;
+  listPorts?: PortLister;
+} = {}) {
   const dataDir = options.dataDir ?? await mkdtemp(path.join(tmpdir(), "iotedu-"));
   const profile = await readBoardProfile(repoRoot);
   const app = await buildApp({
@@ -21,6 +31,9 @@ async function createApp(options: { nativeAvailable?: boolean; runNative?: Nativ
     profile,
     nativeAvailable: options.nativeAvailable,
     runNative: options.runNative,
+    runProgram: options.runProgram,
+    runMonitor: options.runMonitor,
+    listPorts: options.listPorts,
   });
   return { app, dataDir };
 }
@@ -65,6 +78,96 @@ const mockBuild = (overrides: Partial<FirmwareBuildRequest> = {}): FirmwareBuild
   confirm: true,
   ...overrides,
 });
+
+const programPort = "/dev/cu.usbmodem1101";
+
+function programPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    buildId: "compiled-package",
+    port: programPort,
+    intent: "initial_install",
+    confirm: true,
+    preserveNvs: true,
+    ...overrides,
+  };
+}
+
+async function seedCompiledPackage(dataDir: string): Promise<{ hash: string; dir: string }> {
+  const dir = path.join(dataDir, "builds", "compiled-package", "artifacts");
+  await mkdir(dir, { recursive: true });
+  const bootloader = Buffer.from("boot");
+  const table = Buffer.from("table");
+  const otadata = Buffer.from("ota");
+  const application = Buffer.from("app-image-v1.2.0");
+  const merged = Buffer.alloc(0x20000 + application.length, 0xff);
+  merged.set(bootloader, 0);
+  merged.set(table, 0xc000);
+  merged.set(otadata, 0x1d000);
+  merged.set(application, 0x20000);
+  const flasher = {
+    write_flash_args: ["--flash_mode", "dio", "--flash_size", "4MB", "--flash_freq", "48m"],
+    flash_files: {
+      "0x0": "bootloader/bootloader.bin",
+      "0xc000": "partition_table/partition-table.bin",
+      "0x1d000": "ota_data_initial.bin",
+      "0x20000": "sensors.bin",
+    },
+    extra_esptool_args: { chip: "esp32h2", before: "default_reset", after: "hard_reset" },
+    bootloader: { encrypted: "false" },
+    app: { encrypted: "false" },
+    "partition-table": { encrypted: "false" },
+    otadata: { encrypted: "false" },
+  };
+  const bodies: Record<string, Buffer | string> = {
+    "bootloader.bin": bootloader,
+    "partition-table.bin": table,
+    "ota_data_initial.bin": otadata,
+    "sensors.bin": application,
+    "usb-image.bin": merged,
+    "flasher_args.json": JSON.stringify(flasher),
+  };
+  for (const [name, body] of Object.entries(bodies)) {
+    await writeFile(path.join(dir, name), body);
+  }
+  const now = new Date().toISOString();
+  const record: BuildJob = {
+    id: "compiled-package",
+    simulated: false,
+    verification: "compiled",
+    status: "succeeded",
+    request: mockBuild({ mode: "native", softwareVersion: 3, softwareVersionString: "1.2.0" }),
+    validation: { ok: true, issues: [] },
+    logs: ["compiled"],
+    artifacts: Object.keys(bodies).map((name) => ({
+      name,
+      relativePath: path.join("builds", "compiled-package", "artifacts", name),
+      sha256: "abc",
+      size: 4,
+      simulated: false,
+      deployable: false,
+    })),
+    partitionLayoutId: "layout",
+    durationMs: 5,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await writeFile(path.join(dataDir, "builds.json"), JSON.stringify([record]));
+  return { hash: createHash("sha256").update(application).digest("hex"), dir };
+}
+
+async function waitForProgram(
+  app: { inject(options: { method: "GET"; url: string }): Promise<{ json(): { session: ProgramSession } }> },
+  id: string,
+  done: (session: ProgramSession) => boolean,
+): Promise<ProgramSession> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const response = await app.inject({ method: "GET", url: `/api/programmer/sessions/${id}` });
+    const session = response.json().session;
+    if (done(session)) return session;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("programming session did not reach the expected state");
+}
 
 describe("local API", () => {
   const closers: Array<{ close(): Promise<void> }> = [];
@@ -375,10 +478,11 @@ describe("local API", () => {
     expect(artifact).toMatch(/Do not flash/);
 
     const routes = app.printRoutes();
+    expect(routes).toContain("programmer/");
     expect(routes).not.toMatch(/flash|esptool|serial/i);
   });
 
-  it("has no USB flasher or compiler invocation in the application source", async () => {
+  it("has no USB tool or compiler invocation in the application source", async () => {
     async function filesUnder(dir: string): Promise<string[]> {
       const entries = await readdir(dir, { withFileTypes: true });
       const found: string[] = [];
@@ -406,5 +510,256 @@ describe("local API", () => {
     }
     const manifestNames = await readdir(path.join(repoRoot, "catalog/manifests"));
     expect(manifestNames.length).toBeGreaterThan(0);
+  });
+
+  it("rejects a simulated package, an erase request, and a busy or disconnected device", async () => {
+    const { app } = await createApp({ listPorts: async () => ["/dev/cu.usbmodem1101"] });
+    closers.push(app);
+    const built = await app.inject({ method: "POST", url: "/api/builds", payload: mockBuild() });
+    const refused = await app.inject({
+      method: "POST",
+      url: "/api/programmer/sessions",
+      payload: {
+        buildId: built.json().job.id,
+        port: "/dev/cu.usbmodem1101",
+        intent: "initial_install",
+        confirm: true,
+        preserveNvs: true,
+      },
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error.code).toBe("simulated_package");
+
+    const erased = await app.inject({
+      method: "POST",
+      url: "/api/programmer/sessions",
+      payload: {
+        buildId: built.json().job.id,
+        port: "/dev/cu.usbmodem1101",
+        intent: "initial_install",
+        confirm: true,
+        preserveNvs: true,
+        eraseAll: true,
+      },
+    });
+    expect(erased.statusCode).toBe(400);
+
+    const missingNvs = await app.inject({
+      method: "POST",
+      url: "/api/programmer/sessions",
+      payload: {
+        buildId: built.json().job.id,
+        port: "/dev/cu.usbmodem1101",
+        intent: "reflash",
+        confirm: true,
+      },
+    });
+    expect(missingNvs.statusCode).toBe(400);
+
+    const commissioned = await app.inject({
+      method: "POST",
+      url: "/api/programmer/sessions",
+      payload: {
+        buildId: "not-a-package",
+        port: "/dev/tty.usbmodem1101",
+        intent: "commissioned_maintenance",
+        confirm: true,
+        preserveNvs: true,
+      },
+    });
+    expect(commissioned.statusCode).toBe(404);
+  });
+
+  it("writes a compiled package, reports progress, and leaves the package files unchanged", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iotedu-program-"));
+    const seeded = await seedCompiledPackage(dataDir);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: string[][] = [];
+    const runProgram: UsbRunner = async (spec) => {
+      seen.push(spec.writeArgs);
+      spec.onLog("Writing at 0x00020000... (40 %)");
+      await gate;
+      if (spec.signal.aborted) return { ok: false, cancelled: true, diagnostic: null };
+      return { ok: true, cancelled: false, diagnostic: null };
+    };
+    const { app } = await createApp({
+      dataDir,
+      nativeAvailable: true,
+      runProgram,
+      listPorts: async () => ["/dev/cu.usbmodem1101"],
+    });
+    closers.push(app);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/programmer/sessions",
+      payload: programPayload({ intent: "commissioned_maintenance" }),
+    });
+    expect(blocked.statusCode).toBe(400);
+    expect(blocked.json().error.code).toBe("confirmation_required");
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/programmer/sessions",
+      payload: programPayload(),
+    });
+    expect(started.statusCode).toBe(202);
+    const session = started.json().session as ProgramSession;
+    expect(session.eraseAll).toBe(false);
+    expect(session.nvsPreserved).toBe(true);
+    expect(session.hardwareVerified).toBe(false);
+
+    const progress = await waitForProgram(app, session.id, (item) => item.progressPercent === 40 || item.status !== "running");
+    expect(progress.progressPercent).toBe(40);
+    const busy = await app.inject({
+      method: "POST",
+      url: "/api/programmer/sessions",
+      payload: programPayload({ intent: "reflash" }),
+    });
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json().error.code).toBe("port_busy");
+    release();
+
+    const finished = await waitForProgram(app, session.id, (item) => item.status !== "running");
+    expect(finished.status).toBe("succeeded");
+    expect(finished.progressPercent).toBe(100);
+    expect(finished.hardwareVerified).toBe(false);
+    expect(finished.checks.find((item) => item.id === "boot")?.status).toBe("unknown");
+    expect(finished.checks.find((item) => item.id === "factory_reset")?.status).toBe("unknown");
+    expect(seen[0]?.some((arg) => arg.endsWith("usb-image.bin"))).toBe(false);
+    expect(seen[0]?.some((arg) => /erase/i.test(arg))).toBe(false);
+    expect(seen[0]).toEqual(expect.arrayContaining(["0x0", "0xc000", "0x1d000", "0x20000"]));
+    const hash = createHash("sha256").update(await readFile(path.join(seeded.dir, "sensors.bin"))).digest("hex");
+    expect(hash).toBe(seeded.hash);
+    const build = await app.inject({ method: "GET", url: "/api/builds/compiled-package" });
+    expect(build.json().job.verification).toBe("compiled");
+
+    await app.close();
+    closers.splice(closers.indexOf(app), 1);
+    const { app: reopened } = await createApp({ dataDir, nativeAvailable: true, listPorts: async () => ["/dev/cu.usbmodem1101"] });
+    closers.push(reopened);
+    const stored = await reopened.inject({ method: "GET", url: `/api/programmer/sessions/${session.id}` });
+    expect(stored.json().session.status).toBe("succeeded");
+    expect(stored.json().session.hardwareVerified).toBe(false);
+  });
+
+  it("records a failed write and a disconnect without marking the package hardware-verified", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iotedu-program-fail-"));
+    const seeded = await seedCompiledPackage(dataDir);
+    const runProgram: UsbRunner = async () => {
+      attempts += 1;
+      if (attempts === 1) return { ok: false, cancelled: false, diagnostic: "The serial port could not be opened." };
+      return { ok: true, cancelled: false, diagnostic: null };
+    };
+    let attempts = 0;
+    const runMonitor: MonitorRunner = async (spec) => {
+      spec.onLog("could not open port: Device not configured");
+      return { cancelled: false, code: 1 };
+    };
+    const { app } = await createApp({
+      dataDir,
+      nativeAvailable: true,
+      runProgram,
+      runMonitor,
+      listPorts: async () => ["/dev/cu.usbmodem1101"],
+    });
+    closers.push(app);
+    const started = await app.inject({ method: "POST", url: "/api/programmer/sessions", payload: programPayload() });
+    const failed = await waitForProgram(app, started.json().session.id, (item) => item.status !== "running");
+    expect(failed.status).toBe("failed");
+    expect(failed.hardwareVerified).toBe(false);
+    expect(failed.checks.every((item) => item.status !== "passed" || item.id === "connect")).toBe(true);
+    expect(createHash("sha256").update(await readFile(path.join(seeded.dir, "sensors.bin"))).digest("hex")).toBe(seeded.hash);
+
+    const again = await app.inject({ method: "POST", url: "/api/programmer/sessions", payload: programPayload() });
+    expect([201, 202]).toContain(again.statusCode);
+    const written = await waitForProgram(app, again.json().session.id, (item) => item.status !== "running");
+    expect(written.status).toBe("succeeded");
+    expect(written.hardwareVerified).toBe(false);
+    const opened = await app.inject({ method: "POST", url: `/api/programmer/sessions/${written.id}/monitor` });
+    expect(opened.statusCode).toBe(200);
+    const watched = await waitForProgram(app, written.id, (item) => item.stage !== "monitoring");
+    expect(watched.status).toBe("succeeded");
+    expect(watched.checks.find((item) => item.id === "serial")?.status).toBe("failed");
+    expect(watched.checks.find((item) => item.id === "boot")?.status).toBe("unknown");
+    expect(watched.hardwareVerified).toBe(false);
+    const build = await app.inject({ method: "GET", url: "/api/builds/compiled-package" });
+    expect(build.json().job.verification).toBe("compiled");
+  });
+
+  it("cancels a write, captures a redacted monitor log, and recovers an orphaned session", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iotedu-program-cancel-"));
+    await seedCompiledPackage(dataDir);
+    const runProgram: UsbRunner = (spec) => new Promise<UsbRunnerResult>((resolve) => {
+      spec.signal.addEventListener("abort", () => resolve({ ok: false, cancelled: true, diagnostic: null }), { once: true });
+    });
+    const runMonitor: MonitorRunner = async (spec) => {
+      spec.onLog('I boot: App "sensors" version 1.2.0');
+      spec.onLog("passcode: 12345678");
+      spec.onLog("MT:Y.ABCDEFGH");
+      return { cancelled: false, code: 0 };
+    };
+    const { app } = await createApp({
+      dataDir,
+      nativeAvailable: true,
+      runProgram,
+      runMonitor,
+      listPorts: async () => ["/dev/cu.usbmodem1101"],
+    });
+    closers.push(app);
+    const started = await app.inject({ method: "POST", url: "/api/programmer/sessions", payload: programPayload() });
+    const id = started.json().session.id as string;
+    const cancelled = await app.inject({ method: "POST", url: `/api/programmer/sessions/${id}/cancel` });
+    expect(cancelled.statusCode).toBe(200);
+    const interrupted = await waitForProgram(app, id, (item) => item.status !== "running");
+    expect(interrupted.status).toBe("interrupted");
+    expect(interrupted.checks.find((item) => item.id === "write")?.status).toBe("failed");
+
+    const orphan: ProgramSession = {
+      ...interrupted,
+      id: "orphan-program",
+      status: "running",
+      stage: "writing",
+      message: "still writing",
+    };
+    await writeFile(path.join(dataDir, "programmer-sessions.json"), JSON.stringify([interrupted, orphan]));
+    await app.close();
+    closers.splice(closers.indexOf(app), 1);
+    const { app: reopened } = await createApp({
+      dataDir,
+      nativeAvailable: true,
+      runProgram,
+      runMonitor,
+      listPorts: async () => ["/dev/cu.usbmodem1101"],
+    });
+    closers.push(reopened);
+    const recovered = await reopened.inject({ method: "GET", url: "/api/programmer/sessions/orphan-program" });
+    expect(recovered.json().session.status).toBe("interrupted");
+    expect(recovered.json().session.nvsPreserved).toBe(true);
+
+    const success = await reopened.inject({ method: "GET", url: `/api/programmer/sessions/${id}` });
+    expect(success.json().session.status).toBe("interrupted");
+    const monitorApp = reopened;
+    const writable = success.json().session as ProgramSession;
+    writable.status = "succeeded";
+    writable.stage = "idle";
+    const sessions = [writable, recovered.json().session as ProgramSession];
+    await writeFile(path.join(dataDir, "programmer-sessions.json"), JSON.stringify(sessions));
+    const opened = await monitorApp.inject({ method: "POST", url: `/api/programmer/sessions/${id}/monitor` });
+    expect(opened.statusCode).toBe(200);
+    const watched = await waitForProgram(monitorApp, id, (item) => item.stage !== "monitoring");
+    expect(watched.status).toBe("succeeded");
+    expect(watched.checks.find((item) => item.id === "version")?.status).toBe("passed");
+    expect(watched.checks.find((item) => item.id === "matter")?.status).toBe("unknown");
+    expect(watched.hardwareVerified).toBe(false);
+    const saved = await monitorApp.inject({ method: "POST", url: `/api/programmer/sessions/${id}/save-log` });
+    expect(saved.statusCode).toBe(200);
+    const log = await monitorApp.inject({ method: "GET", url: `/api/programmer/sessions/${id}/saved-log` });
+    expect(log.body).toContain("1.2.0");
+    expect(log.body).not.toContain("12345678");
+    expect(log.body).not.toContain("MT:Y");
   });
 });

@@ -1,6 +1,6 @@
 # Firmware integration
 
-**Phase 3: the desktop native builder compiles the modular DHT11 package. The reference tree stays unchanged.**
+**Phase 4: the desktop can compile the modular DHT11 package and prepare a USB write. The reference tree and the component sources stay unchanged.**
 
 Working reference: `reference/matter-dht11/` (allowlisted sources only; not edited).
 

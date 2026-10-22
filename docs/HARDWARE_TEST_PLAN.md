@@ -1,12 +1,28 @@
 # Hardware test plan
 
-No hardware evidence has been collected in this repository. Every item is **pending**. Compiling the reference image and the modular DHT11 image on 2026-10-21 does not complete any item below.
+No hardware evidence has been collected in this repository. Every item is **pending**. Compiling the reference image and the modular DHT11 image, and implementing the USB write workflow, does not complete any item below.
+
+The Firmware Builder shows the same checklist for a compiled package. With no board programmed, every row stays unknown or is absent. Do not mark a row passed from a unit test or a simulated session.
 
 ## Board
 
-ESP32-H2 (DevKitM-1 assumed from GPIO9 BOOT button overlay). DHT11 data on GPIO4. The modular firmware reads that pin from `CONFIG_IOTEDU_DHT11_PIN`, whose default is 4.
+ESP32-H2 (DevKitM-1 / common Super Mini, GPIO9 BOOT). DHT11 data on GPIO4. The modular firmware reads that pin from `CONFIG_IOTEDU_DHT11_PIN`, whose default is 4.
 
-## Checklist
+Download mode, if automatic reset does not occur: hold BOOT (GPIO9), press and release RESET, release BOOT.
+
+## USB checklist
+
+1. Connect the ESP32-H2 with a data USB cable.
+2. Confirm serial communication.
+3. Write a compiled package. NVS is not erased.
+4. Confirm the boot banner.
+5. Confirm Matter startup from the serial log.
+6. Confirm OpenThread startup from the serial log.
+7. Confirm the DHT11 task logged. A reading is not a commissioning result.
+8. Record the firmware version from the serial banner and compare it with the package.
+9. Verify GPIO9 factory reset only when removing fabrics is acceptable.
+
+## Later checklist
 
 1. First-time USB flash of a locally built image; confirm boot and expected `sensors` firmware.
 2. Commission onto the IoT.Edu management fabric.

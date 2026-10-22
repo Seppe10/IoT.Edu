@@ -126,6 +126,11 @@ textarea { min-height: 90px; }
   font-size: 12px;
   white-space: pre-wrap;
 }
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin: 0; }
+.facts div { display: flex; flex-direction: column; gap: 2px; }
+.facts dt { color: #52616b; font-size: 12px; }
+.facts dd { margin: 0; }
+label.choice { flex-direction: row; align-items: flex-start; gap: 8px; }
 fieldset { border: 1px solid #c5d1cf; border-radius: 8px; }
 fieldset label { display: block; margin: 6px 0; }
 

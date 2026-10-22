@@ -308,6 +308,50 @@ export interface OtaDeploymentService {
   get(id: string): Promise<OtaJob | null>;
 }
 
+export const programIntentSchema = z.enum(["initial_install", "reflash", "commissioned_maintenance"]);
+export type ProgramIntent = z.infer<typeof programIntentSchema>;
+
+export const programRequestSchema = z
+  .object({
+    buildId: z.string().regex(/^[A-Za-z0-9-]{1,80}$/),
+    port: z.string().min(1).max(128),
+    intent: programIntentSchema,
+    confirm: z.literal(true),
+    preserveNvs: z.literal(true),
+    acknowledgeCommissioned: z.boolean().optional(),
+  })
+  .strict();
+export type ProgramRequest = z.infer<typeof programRequestSchema>;
+
+export const startupCheckSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  status: z.enum(["passed", "failed", "unknown"]),
+  detail: z.string(),
+});
+export type StartupCheck = z.infer<typeof startupCheckSchema>;
+
+export const programSessionSchema = z.object({
+  id: z.string(),
+  buildId: z.string(),
+  port: z.string(),
+  intent: programIntentSchema,
+  status: z.enum(["running", "succeeded", "failed", "interrupted"]),
+  stage: z.enum(["writing", "monitoring", "idle"]),
+  progressPercent: z.number().int().min(0).max(100).nullable(),
+  logs: z.array(z.string()),
+  monitorLog: z.string(),
+  checks: z.array(startupCheckSchema),
+  message: z.string(),
+  eraseAll: z.literal(false),
+  nvsPreserved: z.literal(true),
+  hardwareVerified: z.literal(false),
+  softwareVersionString: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ProgramSession = z.infer<typeof programSessionSchema>;
+
 export const OTA_LIFECYCLE = [
   { id: "prepare_provider", label: "Preparing the provider" },
   { id: "offer_image", label: "Offering the firmware image" },
