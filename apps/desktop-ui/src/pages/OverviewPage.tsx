@@ -3,6 +3,13 @@ import { Link } from "react-router-dom";
 import type { BuildJob, ManagedNode, OtaJob } from "@iotedu/contracts";
 import { api } from "../api";
 
+export function connectionLabel(node: ManagedNode): string {
+  if (node.connection === "reachable" || node.reachable === true) return "Reachable";
+  if (node.connection === "offline" || node.reachable === false) return "Offline";
+  if (node.connection === "commissioned") return "Commissioned";
+  return "Unknown";
+}
+
 export function OverviewPage() {
   const [nodes, setNodes] = useState<ManagedNode[]>([]);
   const [builds, setBuilds] = useState<BuildJob[]>([]);
@@ -54,7 +61,7 @@ export function OverviewPage() {
       <div className="panel" style={{ marginTop: 16 }}>
         <h2 id="nodes-heading">Nodes</h2>
         {nodes.length === 0 ? (
-          <p className="muted">No nodes recorded. Pairing creates a simulated local record until a Matter controller is available.</p>
+          <p className="muted">No nodes recorded. A simulated record is labelled. A management-fabric node shows its connection separately.</p>
         ) : (
           <table aria-labelledby="nodes-heading">
             <caption className="sr-only">Recorded nodes</caption>
@@ -63,7 +70,7 @@ export function OverviewPage() {
                 <th scope="col">Name</th>
                 <th scope="col">Hardware</th>
                 <th scope="col">Firmware</th>
-                <th scope="col">Reachability</th>
+                <th scope="col">Management connection</th>
                 <th scope="col">Actions</th>
               </tr>
             </thead>
@@ -76,7 +83,7 @@ export function OverviewPage() {
                   </th>
                   <td>{node.hardware}</td>
                   <td>{node.softwareVersionString ?? "Not read"}</td>
-                  <td>{node.reachable == null ? "Unknown" : node.reachable ? "Reachable" : "Unreachable"}</td>
+                  <td>{connectionLabel(node)}</td>
                   <td>
                     <div className="row">
                       <Link className="button secondary" to={`/nodes/${node.id}`}>Details</Link>

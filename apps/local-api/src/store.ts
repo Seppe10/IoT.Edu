@@ -71,11 +71,16 @@ const SECRET_PATTERNS = [
 ];
 
 export function redact(text: string): string {
-  let output = text;
+  const preserved: string[] = [];
+  const held = text.replace(/"(manualPairingCode|qrPairingCode)"\s*:\s*"([^"\\]*)"/g, (_match, key: string, value: string) => {
+    preserved.push(value);
+    return `"${key}":"__IOTEDU_KEEP_${preserved.length - 1}__"`;
+  });
+  let output = held;
   for (const pattern of SECRET_PATTERNS) {
     output = output.replace(pattern, "[redacted]");
   }
-  return output;
+  return output.replace(/__IOTEDU_KEEP_(\d+)__/g, (_match, index: string) => preserved[Number(index)] ?? "[redacted]");
 }
 
 export async function appendAudit(file: string, event: Record<string, unknown>): Promise<void> {

@@ -4,10 +4,16 @@ import {
   FABRIC_LABEL,
   type CapabilityReport,
   type CommissionRequest,
+  type ControllerStatus,
   type ManagedNode,
   type MatterManagementService,
   type NodeRepository,
 } from "@iotedu/contracts";
+import { BACKUP_INSTRUCTIONS } from "./errors.js";
+
+export { MatterOperationError } from "./errors.js";
+export { LiveMatterManagementService, normalizePairingCode } from "./service.js";
+export { redactSecrets } from "./redact.js";
 
 /**
  * Phase 1 stand-in. It records a local node and never opens a Matter session,
@@ -38,7 +44,36 @@ export class MockMatterManagementService implements MatterManagementService {
     };
   }
 
+  async getControllerStatus(): Promise<ControllerStatus> {
+    return {
+      identityLoaded: false,
+      persisted: false,
+      fabricLabel: FABRIC_LABEL,
+      fabricId: null,
+      credentialId: null,
+      controllerNodeId: null,
+      matterJsVersion: null,
+      regenerationBlocked: true,
+      message: "Controller storage has not been created. IoT.Edu will not generate a replacement identity in this release.",
+      backup: BACKUP_INSTRUCTIONS,
+    };
+  }
+
+  async createIdentity(): Promise<ControllerStatus> {
+    return {
+      ...(await this.getControllerStatus()),
+      message: "Mock mode does not create Matter credentials. Live mode creates the management identity only when you ask.",
+    };
+  }
+
+  async restore(): Promise<void> {}
+
+  async close(): Promise<void> {}
+
   async commission(input: CommissionRequest) {
+    if (input.acknowledgeSimulation !== true) {
+      throw new Error("Mock commissioning requires acknowledgement that the record is simulated.");
+    }
     const now = new Date().toISOString();
     const limitation =
       input.path === "new_device"
@@ -92,7 +127,7 @@ export class MockMatterManagementService implements MatterManagementService {
 
   async openCommissioningWindow(_nodeId: string) {
     return {
-      opened: false as const,
+      opened: false,
       message:
         "AdministratorCommissioning was not invoked. A commissioning window can be opened only after a real management session exists.",
     };

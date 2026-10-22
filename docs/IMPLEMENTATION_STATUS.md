@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-10-22 (Phase 4 USB write workflow; no board has been programmed).
+Last updated: 2026-10-22 (Phase 5 Matter management controller; no board has been programmed or commissioned).
 
 ## Phase 0 gate
 
@@ -183,13 +183,43 @@ npm run typecheck # passed for all six workspaces
 - Test VID/PID and example DAC providers.
 - `esp_bsp_generic` still pulls the same unused LCD/LVGL components. The dependency lock was not changed.
 - Unknown Kconfig symbol `ENABLE_WIFI_AP` in defaults (warning only).
-- Bluetooth commissioning, Thread dataset, and AI are not implemented.
+- Bluetooth commissioning is unsupported in Matter.js 0.18.0 on this host, and no Thread operational dataset is stored. The new-device path reports that instead of commissioning. AI is not implemented.
 - `npm audit` still reports Vitest 3.2.7, `@vitest/mocker`, and `tinypool`. The published fix is Vitest 5, which was not applied. See `docs/DEPENDENCY_AUDIT.md`.
 - Figma pixel match is unverified.
 - The IDE accessibility snapshot still omits some static table-cell names. Chrome’s accessibility tree exposes them after the table-cell display fix (`docs/DECISIONS.md`).
 
-## Not started
+## Phase 5
 
-Phase 5 has not been started. The Matter controller and OTA Provider are unchanged.
+**Met for the management controller in software.** Matter.js 0.18.0 runs as a `ServerNode` with `ControllerBehavior`. The identity is created only when requested and is reopened from `$DATA_DIR/matter-controller`. Smart-home-first commissioning is the live path. A new device is refused because Bluetooth commissioning and a Thread operational dataset are both unavailable. Mock mode still stores a simulated record for the UI and the automated tests.
+
+No ESP32-H2, HomePod mini, or Apple Home session was observed. USB flashing, CASE to a physical node, and a live SoftwareVersion read remain pending.
+
+```text
+npm test          # 55 vitest tests, all passed
+npm run typecheck # passed for all six workspaces
+```
+
+| Suite | Result |
+|---|---|
+| `@iotedu/contracts` (4) | Passed |
+| `@iotedu/catalog` (3) | Passed |
+| `@iotedu/firmware-builder` (21) | Passed |
+| `@iotedu/matter-controller` (9) | Passed |
+| `@iotedu/local-api` (17) | Passed |
+| `@iotedu/desktop-ui` (1) | Passed |
+| Typecheck, all workspaces | Passed |
+| USB write on a connected ESP32-H2 | Not run |
+| Commissioning against a HomePod mini | Not run |
+
+### Phase 6 requirements
+
+Do not start until this phase has been reviewed. The OTA Provider should:
+
+- Use Matter OTA and BDX on the management CASE session.
+- Offer one compiled `.ota` image whose VID, PID, and SoftwareVersion match the package.
+- Query the OTA Software Update Requestor already read on endpoint 0.
+- Leave sensor measurements and actuator commands untouched.
+- Record an interrupted transfer as interrupted, not as success.
+- Update one selected node.
 
 `docs/PHASE2_DATABASE.md` is a separate design note for a future PostgreSQL catalogue and GitHub client. The running application has no PostgreSQL client and no GitHub catalogue client.

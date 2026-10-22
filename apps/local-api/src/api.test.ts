@@ -3,10 +3,11 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BuildJob, FirmwareBuildRequest, ProgramSession } from "@iotedu/contracts";
+import type { BuildJob, FirmwareBuildRequest, MatterManagementService, ProgramSession } from "@iotedu/contracts";
 import type { NativeBuildResult, NativeBuildSpec } from "@iotedu/firmware-builder/native";
 import type { UsbRunnerResult, UsbRunnerSpec } from "@iotedu/firmware-builder/programmer";
 import { afterEach, describe, expect, it } from "vitest";
+import { MatterOperationError } from "@iotedu/matter-controller";
 import { buildApp, readBoardProfile } from "./app.js";
 import type { MonitorRunner, PortLister, UsbRunner } from "./programmer-service.js";
 import type { NativeRunner } from "./services.js";
@@ -21,6 +22,7 @@ async function createApp(options: {
   runProgram?: UsbRunner;
   runMonitor?: MonitorRunner;
   listPorts?: PortLister;
+  matter?: MatterManagementService;
 } = {}) {
   const dataDir = options.dataDir ?? await mkdtemp(path.join(tmpdir(), "iotedu-"));
   const profile = await readBoardProfile(repoRoot);
@@ -34,6 +36,7 @@ async function createApp(options: {
     runProgram: options.runProgram,
     runMonitor: options.runMonitor,
     listPorts: options.listPorts,
+    matter: options.matter,
   });
   return { app, dataDir };
 }
@@ -455,6 +458,42 @@ describe("local API", () => {
       },
     });
     expect(ai.statusCode).toBe(503);
+  });
+
+  it("returns a local commissioning code and redacts secrets from errors", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iotedu-"));
+    await writeFile(path.join(dataDir, "nodes.json"), JSON.stringify([{ id: "node-1", name: "Bench" }]));
+    const matter: MatterManagementService = {
+      getCapabilities: () => Promise.reject(new Error("unused")),
+      getControllerStatus: () => Promise.reject(new Error("unused")),
+      createIdentity: () => Promise.reject(new Error("unused")),
+      restore: () => Promise.resolve(),
+      close: () => Promise.resolve(),
+      commission: () => {
+        throw new MatterOperationError("discovery_failed", "device not found for MT:Y.ABCDEF");
+      },
+      refreshNode: () => Promise.reject(new Error("unused")),
+      openCommissioningWindow: () => Promise.resolve({
+        opened: true,
+        message: "window",
+        manualPairingCode: "3497-011-2332",
+        qrPairingCode: "MT:Y.ABCDEF",
+      }),
+    };
+    const { app } = await createApp({ dataDir, matter });
+    closers.push(app);
+    const window = await app.inject({ method: "POST", url: "/api/nodes/node-1/commissioning-window" });
+    expect(window.statusCode).toBe(200);
+    expect(window.body).toContain("3497-011-2332");
+    expect(window.body).toContain("MT:Y.ABCDEF");
+    const failed = await app.inject({
+      method: "POST",
+      url: "/api/nodes/commission",
+      payload: { path: "smart_home", name: "Bench", pairingCode: "MT:Y.ABCDEF", confirm: true },
+    });
+    expect(failed.statusCode).toBe(400);
+    expect(failed.body).not.toContain("MT:Y.ABCDEF");
+    expect(failed.body).toContain("[redacted]");
   });
 
   it("does not expose a simulated package as a flashable or OTA image", async () => {

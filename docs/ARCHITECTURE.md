@@ -1,6 +1,6 @@
 # Architecture
 
-Phase 4 adds a USB write workflow for compiled packages. Matter commissioning and OTA transfer stay simulated. A USB write has not been run on a board.
+Phase 5 adds a persistent Matter.js management controller. USB writing is unchanged and has not been run on a board. OTA transfer is still not running.
 
 ## Intended layers
 
@@ -21,7 +21,7 @@ Phase 4 adds a USB write workflow for compiled packages. Matter commissioning an
 - `CatalogRepository` — `LocalCatalogRepository` reads `catalog/manifests/*.json`
 - `NodeRepository` — atomic JSON under `DATA_DIR`
 - `FirmwareBuildService` — mock packages and native ESP-IDF builds. USB writing accepts a compiled package and rejects a simulated one.
-- `MatterManagementService` — simulated commissioning; no session and no invented node id
+- `MatterManagementService` — mock mode stores a simulated record. Live mode uses Matter.js and does not invent a node id
 - `OtaDeploymentService` — preflight blocks unknown mandatory checks; simulated artifacts are not deployable
 
 A future PostgreSQL catalogue must replace `CatalogRepository` only. Node, build, and OTA job files stay local JSON.
@@ -41,6 +41,7 @@ The browser never runs host OS commands. The local API owns subprocesses (IDF, e
 - Reference firmware under `reference/matter-dht11/` is the Phase 0 import and is left unmodified.
 - Phase 2 adds `firmware/components/iotedu_core` and `firmware/components/iotedu_dht11`. `scripts/build_modular_dht11.sh` generates a gitignored workspace and compiles it with ESP-IDF.
 - Phase 3 connects the Firmware Builder to that pipeline. Mock mode remains for labelled simulations. Native mode generates an isolated workspace under `DATA_DIR`, runs ESP-IDF v5.4.1, and stores the application image, merged USB image, and Matter `.ota` image. Docker mode stays unavailable. A compiled package is not hardware-verified.
-- Phase 4 adds USB writing for a compiled package. The local API builds the command from `flasher_args.json`, refuses erase and simulated packages, and can open a serial monitor afterwards. The Matter controller and OTA Provider are unchanged. No board has been written.
+- Phase 4 adds USB writing for a compiled package. The local API builds the command from `flasher_args.json`, refuses erase and simulated packages, and can open a serial monitor afterwards. No board has been written.
+- Phase 5 adds the management controller in `packages/matter-controller`. Live mode uses `@matter/main` 0.18.0 (`ServerNode`, `ControllerBehavior`, `peers.commission`). Keys stay in `$DATA_DIR/matter-controller` with directory mode `0700`. Mock mode remains the test default. Bluetooth commissioning and a Thread operational dataset are unavailable, so a new device is not commissioned. No board has joined the fabric.
 
 Figma file `ctgVnYSDl6CAmnc2sXTfKk` could not be read (no edit access on the Figma MCP session). Screen structure follows the specification’s nine management screens. Pixel match to the wireframes is unverified.

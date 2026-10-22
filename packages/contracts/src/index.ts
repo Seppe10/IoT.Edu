@@ -87,6 +87,12 @@ export const managedNodeSchema = z.object({
   commissionedFabricCount: z.number().int().nullable(),
   otherFabricCount: z.number().int().nullable(),
   partitionLayoutId: z.string().nullable(),
+  hardwareVersion: z.number().int().nullable().optional(),
+  hardwareVersionString: z.string().nullable().optional(),
+  connection: z.enum(["commissioned", "reachable", "offline", "unknown"]).optional(),
+  lastCommunicationAt: z.string().nullable().optional(),
+  firmwareUpdateEligible: z.boolean().nullable().optional(),
+  managementFabricId: z.string().nullable().optional(),
   installedComponents: z.array(z.string()),
   history: z.array(
     z.object({
@@ -103,20 +109,51 @@ export type ManagedNode = z.infer<typeof managedNodeSchema>;
 export const commissionRequestSchema = z.object({
   path: z.enum(["new_device", "smart_home"]),
   name: z.string().min(1).max(80),
-  pairingCode: z.string().max(64).optional(),
+  pairingCode: z.string().max(512).optional(),
   confirm: z.literal(true),
-  acknowledgeSimulation: z.literal(true),
+  acknowledgeSimulation: z.literal(true).optional(),
 });
 export type CommissionRequest = z.infer<typeof commissionRequestSchema>;
 
 export const commissionResultSchema = z.object({
-  simulated: z.literal(true),
-  matterSessionOpened: z.literal(false),
+  simulated: z.boolean(),
+  matterSessionOpened: z.boolean(),
   node: managedNodeSchema,
   message: z.string(),
   limitation: z.string().nullable(),
+}).refine((result) => result.simulated !== result.matterSessionOpened, {
+  message: "A simulated record cannot be a live Matter session",
 });
 export type CommissionResult = z.infer<typeof commissionResultSchema>;
+
+export const controllerStatusSchema = z.object({
+  identityLoaded: z.boolean(),
+  persisted: z.boolean(),
+  fabricLabel: z.string(),
+  fabricId: z.string().nullable(),
+  credentialId: z.string().nullable(),
+  controllerNodeId: z.string().nullable(),
+  matterJsVersion: z.string().nullable(),
+  regenerationBlocked: z.boolean(),
+  message: z.string(),
+  backup: z.string(),
+});
+export type ControllerStatus = z.infer<typeof controllerStatusSchema>;
+
+export const refreshResultSchema = z.object({
+  node: managedNodeSchema,
+  liveRead: z.enum(["unavailable", "read", "failed"]),
+  message: z.string(),
+});
+export type RefreshResult = z.infer<typeof refreshResultSchema>;
+
+export const commissioningWindowResultSchema = z.object({
+  opened: z.boolean(),
+  message: z.string(),
+  manualPairingCode: z.string().optional(),
+  qrPairingCode: z.string().optional(),
+});
+export type CommissioningWindowResult = z.infer<typeof commissioningWindowResultSchema>;
 
 export const buildModeSchema = z.enum(["mock", "native", "docker"]);
 export type BuildMode = z.infer<typeof buildModeSchema>;
@@ -297,9 +334,13 @@ export interface FirmwareBuildService {
 
 export interface MatterManagementService {
   getCapabilities(): Promise<CapabilityReport>;
+  getControllerStatus(): Promise<ControllerStatus>;
+  createIdentity(): Promise<ControllerStatus>;
+  restore(): Promise<void>;
+  close(): Promise<void>;
   commission(input: CommissionRequest): Promise<CommissionResult>;
-  refreshNode(nodeId: string): Promise<{ node: ManagedNode; liveRead: "unavailable"; message: string }>;
-  openCommissioningWindow(nodeId: string): Promise<{ opened: false; message: string }>;
+  refreshNode(nodeId: string): Promise<RefreshResult>;
+  openCommissioningWindow(nodeId: string): Promise<CommissioningWindowResult>;
 }
 
 export interface OtaDeploymentService {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { CapabilityReport } from "@iotedu/contracts";
-import { api } from "../api";
+import type { CapabilityReport, ControllerStatus } from "@iotedu/contracts";
+import { ApiError, api } from "../api";
 
 interface Settings {
   applicationVersion: string;
@@ -16,17 +16,12 @@ interface Settings {
   notes: string[];
 }
 
-interface ControllerStatus {
-  identityLoaded: boolean;
-  fabricLabel: string;
-  message: string;
-}
-
 export function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [controller, setController] = useState<ControllerStatus | null>(null);
   const [caps, setCaps] = useState<CapabilityReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -40,6 +35,21 @@ export function SettingsPage() {
     }).catch((reason: Error) => setError(reason.message));
   }, []);
 
+  async function createIdentity() {
+    setError(null);
+    try {
+      const status = await api<ControllerStatus>("/api/controller/identity", {
+        method: "POST",
+        body: JSON.stringify({ confirm: true }),
+      });
+      setController(status);
+      setNotice(status.message);
+      if (settings) setSettings({ ...settings, controllerIdentityLoaded: status.identityLoaded, fabricLabel: status.fabricLabel });
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "The management identity was not created.");
+    }
+  }
+
   return (
     <section className="stack">
       <header>
@@ -47,6 +57,7 @@ export function SettingsPage() {
         <p className="lede">Local paths and capability limits. A missing Matter identity is reported and is not recreated.</p>
       </header>
       {error && <p className="banner bad">{error}</p>}
+      {notice && <p className="banner">{notice}</p>}
       {settings && (
         <div className="panel">
           <table>
@@ -67,7 +78,16 @@ export function SettingsPage() {
           <ul>{settings.notes.map((note) => <li key={note}>{note}</li>)}</ul>
         </div>
       )}
-      {controller && <div className="banner">{controller.message}</div>}
+      {controller && (
+        <div className="banner">
+          <p>{controller.message}</p>
+          {controller.matterJsVersion && <p>Matter.js {controller.matterJsVersion}. Credential id {controller.credentialId ?? "not stored"}. Fabric id {controller.fabricId ?? "assigned when the first node joins"}.</p>}
+          {caps?.matterCommissioning !== "mock_only" && !controller.identityLoaded && controller.regenerationBlocked && !controller.persisted && (
+            <button type="button" onClick={() => void createIdentity()}>Create management identity</button>
+          )}
+          <p>{controller.backup}</p>
+        </div>
+      )}
       {caps && (
         <div className="panel">
           <h2 id="capabilities-heading">Capabilities</h2>

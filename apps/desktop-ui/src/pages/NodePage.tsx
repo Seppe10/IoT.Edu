@@ -1,7 +1,26 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import type { ManagedNode } from "@iotedu/contracts";
+import type { CommissioningWindowResult, ManagedNode, RefreshResult } from "@iotedu/contracts";
 import { ApiError, api } from "../api";
+
+export function identityRow(label: string, value: string | number | null | undefined) {
+  if (value == null || value === "") return null;
+  return <tr key={label}><th scope="row">{label}</th><td>{String(value)}</td></tr>;
+}
+
+function connectionText(node: ManagedNode): string | null {
+  if (node.connection === "reachable" || node.reachable === true) return "Reachable";
+  if (node.connection === "offline" || node.reachable === false) return "Offline";
+  if (node.connection === "commissioned") return "Commissioned";
+  if (node.connection === "unknown" || node.reachable == null) return node.simulated ? null : "Unknown";
+  return null;
+}
+
+function eligibilityText(value: boolean | null | undefined): string | null {
+  if (value === true) return "OTA requestor reported update possible";
+  if (value === false) return "OTA requestor reported update not possible";
+  return null;
+}
 
 export function NodePage() {
   const { id = "" } = useParams();
@@ -29,15 +48,16 @@ export function NodePage() {
   }
 
   async function refresh() {
-    const body = await api<{ node: ManagedNode; message: string }>(`/api/nodes/${id}/refresh`, { method: "POST" });
+    const body = await api<RefreshResult>(`/api/nodes/${id}/refresh`, { method: "POST" });
     setNode(body.node);
     setMessage(body.message);
   }
 
   async function windowAction() {
     try {
-      const body = await api<{ opened: false; message: string }>(`/api/nodes/${id}/commissioning-window`, { method: "POST" });
-      setMessage(body.message);
+      const body = await api<CommissioningWindowResult>(`/api/nodes/${id}/commissioning-window`, { method: "POST" });
+      const code = body.manualPairingCode || body.qrPairingCode;
+      setMessage(code ? `${body.message} Code: ${code}` : body.message);
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : "Request failed");
     }
@@ -66,15 +86,21 @@ export function NodePage() {
           <table aria-labelledby="identity-heading">
             <caption className="sr-only">Node identity</caption>
             <tbody>
-              <tr><th scope="row">Vendor / product</th><td>{node.vendorId ?? "Unknown"} / {node.productId ?? "Unknown"}</td></tr>
-              <tr><th scope="row">SoftwareVersion</th><td>{node.softwareVersion ?? "Not read"} ({node.softwareVersionString ?? "not read"})</td></tr>
-              <tr><th scope="row">Hardware</th><td>{node.hardware}</td></tr>
-              <tr><th scope="row">Reachability</th><td>{node.reachable == null ? "Unknown" : String(node.reachable)}</td></tr>
-              <tr><th scope="row">Management fabric</th><td>{node.fabricLabel}</td></tr>
-              <tr><th scope="row">Commissioned fabrics</th><td>{node.commissionedFabricCount ?? "Not permitted or not read"}</td></tr>
-              <tr><th scope="row">Other fabrics</th><td>{node.otherFabricCount ?? "Names are not available"}</td></tr>
-              <tr><th scope="row">Partition layout</th><td>{node.partitionLayoutId ?? "Unknown until flashed by this application"}</td></tr>
-              <tr><th scope="row">Installed components</th><td>{node.installedComponents.join(", ") || "Unknown"}</td></tr>
+              {identityRow("Matter node ID", node.matterNodeId)}
+              {identityRow("Vendor ID", node.vendorId)}
+              {identityRow("Product ID", node.productId)}
+              {identityRow("Hardware version", node.hardwareVersion)}
+              {identityRow("Hardware version string", node.hardwareVersionString)}
+              {identityRow("SoftwareVersion", node.softwareVersion)}
+              {identityRow("SoftwareVersionString", node.softwareVersionString)}
+              {identityRow("Management fabric", node.fabricLabel)}
+              {identityRow("Management fabric ID", node.managementFabricId)}
+              {identityRow("Commissioned fabric count", node.commissionedFabricCount)}
+              {identityRow("Management connection", connectionText(node))}
+              {identityRow("Last successful communication", node.lastCommunicationAt)}
+              {identityRow("Firmware update eligibility", eligibilityText(node.firmwareUpdateEligible))}
+              {identityRow("Partition layout", node.partitionLayoutId)}
+              {node.installedComponents.length > 0 && identityRow("Installed components", node.installedComponents.join(", "))}
             </tbody>
           </table>
         </div>

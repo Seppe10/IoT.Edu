@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { componentManifestSchema, firmwareBuildRequestSchema, programRequestSchema } from "./index.js";
+import { commissionRequestSchema, componentManifestSchema, firmwareBuildRequestSchema, programRequestSchema } from "./index.js";
 
 describe("contracts", () => {
   it("rejects a manifest that claims a remote source", () => {
@@ -54,5 +54,22 @@ describe("contracts", () => {
       preserveNvs: false,
     });
     expect(omitted.success).toBe(false);
+  });
+
+  it("rejects an unconfirmed commission and accepts a Matter QR code", () => {
+    const rejected = commissionRequestSchema.safeParse({
+      path: "smart_home",
+      name: "Bench",
+      pairingCode: "MT:Y.ABCDEF",
+      confirm: false,
+    });
+    expect(rejected.success).toBe(false);
+    const accepted = commissionRequestSchema.safeParse({
+      path: "smart_home",
+      name: "Bench",
+      pairingCode: "MT:Y.ABCDEF",
+      confirm: true,
+    });
+    expect(accepted.success).toBe(true);
   });
 });

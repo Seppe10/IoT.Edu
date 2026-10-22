@@ -14,7 +14,8 @@ import {
   type OtaJob,
 } from "@iotedu/contracts";
 import { inspectToolchain, loadReferenceLayout, type BoardProfile } from "@iotedu/firmware-builder";
-import { MockMatterManagementService } from "@iotedu/matter-controller";
+import { LiveMatterManagementService, MatterOperationError, MockMatterManagementService } from "@iotedu/matter-controller";
+import type { MatterManagementService } from "@iotedu/contracts";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import { LocalProgrammerService, ProgrammerError, type MonitorRunner, type PortLister, type UsbRunner } from "./programmer-service.js";
@@ -38,6 +39,8 @@ export interface AppPaths {
   runProgram?: UsbRunner;
   runMonitor?: MonitorRunner;
   listPorts?: PortLister;
+  matterMode?: "mock" | "live";
+  matter?: MatterManagementService;
 }
 
 export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
@@ -47,7 +50,11 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
   const catalog = new LocalCatalogRepository(paths.catalogDir, paths.repoRoot);
   const toolchain = await inspectToolchain();
   const nativeAvailable = paths.nativeAvailable ?? toolchain.nativeAvailable;
-  const matter = new MockMatterManagementService(nodes);
+  const matter = paths.matter
+    ?? (paths.matterMode === "live"
+      ? new LiveMatterManagementService(nodes, paths.dataDir)
+      : new MockMatterManagementService(nodes));
+  await matter.restore();
   const firmware = new LocalFirmwareBuildService(catalog, builds, paths.dataDir, paths.repoRoot, paths.profile, {
     nodes,
     nativeAvailable,
@@ -79,7 +86,12 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
       return reply.code(400).send({
-        error: { code: "invalid_input", message: error.issues.map((issue) => issue.message).join("; ") },
+        error: { code: "invalid_input", message: redact(error.issues.map((issue) => issue.message).join("; ")) },
+      });
+    }
+    if (error instanceof MatterOperationError) {
+      return reply.code(error.statusCode).send({
+        error: { code: error.code, message: redact(error.message) },
       });
     }
     const message = error instanceof Error ? error.message : "Request failed";
@@ -116,7 +128,8 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
       action: "commission",
       path: body.path,
       nodeId: result.node.id,
-      simulated: true,
+      simulated: result.simulated,
+      matterSessionOpened: result.matterSessionOpened,
       pairingCode: body.pairingCode ? "redacted" : undefined,
     });
     return result;
@@ -350,7 +363,20 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     });
   });
 
-  app.get("/api/settings", async () => ({
+  app.get("/api/controller/status", async () => matter.getControllerStatus());
+  app.post("/api/controller/identity", async (request) => {
+    const body = request.body as { confirm?: boolean };
+    if (body?.confirm !== true) {
+      return { ...(await matter.getControllerStatus()), message: "Creating a controller identity requires confirmation." };
+    }
+    const status = await matter.createIdentity();
+    await appendAudit(auditFile, { action: "controller_identity", loaded: status.identityLoaded, persisted: status.persisted });
+    return status;
+  });
+
+  app.get("/api/settings", async () => {
+    const controller = await matter.getControllerStatus();
+    return {
     applicationVersion: "0.1.0",
     dataDir: paths.dataDir,
     buildMode: nativeAvailable ? "native" : "mock_only",
@@ -359,8 +385,8 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     espMatterPathConfigured: toolchain.espMatterPathConfigured,
     toolchainProbed: true,
     dockerProbed: false,
-    controllerIdentityLoaded: false,
-    fabricLabel: "IoT.Edu Management",
+    controllerIdentityLoaded: controller.identityLoaded,
+    fabricLabel: controller.fabricLabel,
     notes: [
       nativeAvailable
         ? "Native builds use the configured ESP-IDF v5.4.1 environment. Docker remains unavailable."
@@ -368,16 +394,10 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
       nativeAvailable
         ? "A compiled package can be written over USB. NVS is not erased. Writing the image does not verify startup or commission the node."
         : "USB writing needs the same ESP-IDF environment as a native build. Simulated packages cannot be written.",
-      "No Matter controller identity exists. A missing credential file is not replaced automatically.",
+      controller.message,
     ],
-  }));
-
-  app.get("/api/controller/status", async () => ({
-    identityLoaded: false,
-    fabricLabel: "IoT.Edu Management",
-    persisted: false,
-    message: "Controller storage has not been created. IoT.Edu will not generate a replacement identity in this release.",
-  }));
+  };
+  });
 
   app.get("/api/events", async (request, reply) => {
     reply.hijack();
@@ -390,6 +410,10 @@ export async function buildApp(paths: AppPaths): Promise<FastifyInstance> {
     const otasNow = await otas.list();
     reply.raw.write(`data: ${JSON.stringify({ builds: buildsNow, otaJobs: otasNow })}\n\n`);
     reply.raw.end();
+  });
+
+  app.addHook("onClose", async () => {
+    await matter.close();
   });
 
   app.addHook("onSend", async (request, _reply, payload) => {

@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@iotedu/contracts": "0.1.0"
+    "@iotedu/contracts": "0.1.0",
+    "@matter/main": "0.18.0"
   },
   "devDependencies": {
     "typescript": "5.8.2",

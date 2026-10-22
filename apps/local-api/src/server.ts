@@ -25,6 +25,7 @@ const app = await buildApp({
   repoRoot,
   catalogDir: path.join(repoRoot, "catalog/manifests"),
   profile,
+  matterMode: process.env.MATTER_MODE === "mock" ? "mock" : "live",
 });
 
 await app.listen({ host, port });

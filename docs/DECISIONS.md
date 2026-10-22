@@ -165,4 +165,22 @@ A write requires `confirm` and `preserveNvs: true`. A commissioned-node write re
 
 ### Startup evidence is not hardware verification
 
-Serial text can mark individual checklist rows when the expected lines appear. GPIO9 factory reset stays unknown. The package record stays `compiled`. The Matter management service is still the Phase 1 stand-in, so a USB write cannot join or disturb a future management fabric except by rebooting a node whose NVS is left intact.
+Serial text can mark individual checklist rows when the expected lines appear. GPIO9 factory reset stays unknown. The package record stays `compiled`. A USB write does not commission a node. NVS is left intact.
+
+## Phase 5
+
+### One management fabric, on the existing Thread network
+
+IoT.Edu is a second Matter administrator. It does not create a Thread network and it does not display sensor values or actuator controls. The smart-home controller keeps that role. The supported commissioning path is smart-home-first: the user opens pairing on Apple Home or another controller, and IoT.Edu commissions with that code over IP. `autoSubscribe` is false, and the initial read is limited to endpoint 0.
+
+### A new board is not commissioned from this host
+
+The installed Matter.js 0.18.0 build has no Bluetooth transport. No Thread operational dataset is stored. The new-device path returns that limitation and does not save a node. It does not invent a dataset or report success.
+
+### The controller identity is created once
+
+The first identity is an explicit Settings action. Later starts reopen `$DATA_DIR/matter-controller`. If that record is missing its keys, or keys exist without the record, IoT.Edu does not generate a replacement. Matter.js process signal handlers and exit-code handling are turned off before the platform loads so the API process keeps its own lifecycle. Logs pass through a redaction step. The controller’s own commissioning passcode stays in that directory and is not copied into node JSON.
+
+### A failed join does not factory reset the device
+
+Fabric-table rejection, discovery failure, and a lost CASE session leave the node as it was. Recovery is a backup of the `matter-controller` directory, or a new commissioning window opened by an administrator that is still on the device. The firmware’s fabric table holds five fabrics.

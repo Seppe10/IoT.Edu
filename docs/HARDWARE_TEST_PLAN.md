@@ -22,6 +22,21 @@ Download mode, if automatic reset does not occur: hold BOOT (GPIO9), press and r
 8. Record the firmware version from the serial banner and compare it with the package.
 9. Verify GPIO9 factory reset only when removing fabrics is acceptable.
 
+## HomePod mini and Apple Home
+
+Use an ESP32-H2 that can reach a HomePod mini Thread border router. Every step is **pending**. Do not mark one from a unit test, a simulated node, or a successful Matter.js startup on the Mac.
+
+1. The device boots after a USB write from this application.
+2. Matter and OpenThread initialise. Confirm that from the serial log.
+3. The device joins the existing Thread network. Do not create another Thread network.
+4. Apple Home commissions the device and continues to show it.
+5. IoT.Edu joins as a second Matter administrator, using a pairing code from Apple Home.
+6. IoT.Edu establishes a CASE session on its own fabric.
+7. IoT.Edu reads the device’s SoftwareVersion and identity, and those values match the device.
+8. Restart IoT.Edu. The same controller credential id is loaded and the node reconnects.
+9. Apple Home still displays and controls the device on its own fabric.
+10. IoT.Edu does not show operational sensor or actuator values.
+
 ## Later checklist
 
 1. First-time USB flash of a locally built image; confirm boot and expected `sensors` firmware.
