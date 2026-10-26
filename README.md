@@ -6,7 +6,7 @@ The application commissions nodes onto an **IoT.Edu Management** fabric, builds 
 
 ## Current status
 
-**Phase 7 — hardware verification in progress. Physical verification is still pending.** The Hardware verification screen can detect a port, probe the chip, and write firmware 1.1.0 only after confirmation. No ESP32-H2 has been programmed, commissioned, or updated. Automated tests do not complete this phase.
+**Phase 7 — the ESP32-H2 is running firmware 1.3.0 and is on both Apple Home and the IoT.Edu management fabric.** The desktop UI is the Vite development server with the local API. It is not a packaged macOS application. Matter OTA has not been deployed. `hardwareVerified` remains false.
 
 | Capability | Status |
 |---|---|

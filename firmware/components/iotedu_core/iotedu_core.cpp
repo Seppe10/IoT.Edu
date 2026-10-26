@@ -5,8 +5,13 @@
 #include <bsp/esp-bsp.h>
 #include <esp_err.h>
 #include <esp_log.h>
+#include <esp_mac.h>
 #include <esp_matter.h>
+#include <nvs.h>
 #include <nvs_flash.h>
+
+#include <stdio.h>
+#include <string.h>
 
 #include <app_openthread_config.h>
 #include <app_reset.h>
@@ -15,6 +20,59 @@ using namespace esp_matter;
 using namespace esp_matter::attribute;
 
 static const char *TAG = "iotedu_core";
+
+static esp_err_t ensure_stable_serial_number(char *serial, size_t serial_size)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("chip-factory", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    size_t length = serial_size;
+    err = nvs_get_str(handle, "serial-num", serial, &length);
+    if (err == ESP_OK && serial[0] != '\0') {
+        nvs_close(handle);
+        return ESP_OK;
+    }
+
+    uint8_t mac[6] = {};
+    err = esp_read_mac(mac, ESP_MAC_BASE);
+    if (err != ESP_OK) {
+        nvs_close(handle);
+        return err;
+    }
+    snprintf(serial, serial_size, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    err = nvs_set_str(handle, "serial-num", serial);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Stored stable Basic Information serial number");
+    }
+    return err;
+}
+
+static esp_err_t enable_serial_number_attribute(node_t *node)
+{
+    endpoint_t *root = endpoint::get(node, 0);
+    cluster_t *basic = root == nullptr ? nullptr : cluster::get(root, chip::app::Clusters::BasicInformation::Id);
+    if (basic == nullptr) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    char serial[13] = {};
+    esp_err_t err = ensure_stable_serial_number(serial, sizeof(serial));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to store serial number, err:%d", err);
+        return err;
+    }
+    if (cluster::basic_information::attribute::create_serial_number(basic, serial, static_cast<uint16_t>(strlen(serial))) == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
 
 static esp_err_t factory_reset_button_register()
 {
@@ -92,6 +150,11 @@ esp_err_t iotedu_core_prepare(esp_matter::node_t **node)
     if (created == nullptr) {
         ESP_LOGE(TAG, "Failed to create Matter node");
         return ESP_FAIL;
+    }
+    err = enable_serial_number_attribute(created);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable Basic Information SerialNumber, err:%d", err);
+        return err;
     }
     *node = created;
     return ESP_OK;

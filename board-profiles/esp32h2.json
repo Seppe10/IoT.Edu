@@ -7,6 +7,13 @@
     { "gpio": 8, "reason": "ESP32-H2 strapping pin" },
     { "gpio": 9, "reason": "BOOT / factory-reset button on the reference DevKit overlay" }
   ],
+  "adc1Channels": [
+    { "channel": 0, "gpio": 1 },
+    { "channel": 1, "gpio": 2 },
+    { "channel": 2, "gpio": 3 },
+    { "channel": 3, "gpio": 4 },
+    { "channel": 4, "gpio": 5 }
+  ],
   "flashSizeBytes": 4194304,
   "bootloaderOffset": 0,
   "partitionTableOffset": 49152,

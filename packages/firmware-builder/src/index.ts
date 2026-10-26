@@ -18,6 +18,7 @@ export interface BoardProfile {
   gpioMin: number;
   gpioMax: number;
   reservedGpio: { gpio: number; reason: string }[];
+  adc1Channels?: { channel: number; gpio: number }[];
   flashSizeBytes: number;
   bootloaderOffset: number;
   partitionTableOffset: number;
@@ -256,6 +257,8 @@ export function firmwareCompatibilityIssues(input: {
   softwareVersion: number;
   softwareVersionString: string;
   dht11Gpio: number;
+  pinExpectations?: { key: string; value: string }[];
+  expectedProductId?: number;
   appBytes: number;
   slotBytes: number;
   appVersion: string;
@@ -275,12 +278,18 @@ export function firmwareCompatibilityIssues(input: {
   expect("CONFIG_ENABLE_OTA_REQUESTOR", "y", "ota_requestor_disabled", "OTA Requestor is not enabled");
   expect("CONFIG_MAX_FABRICS", "5", "multi_fabric_disabled", "Multi-fabric support is not the reference maximum of 5");
   expect("CONFIG_OPENTHREAD_ENABLED", "y", "openthread_disabled", "OpenThread is not enabled");
-  expect(
-    "CONFIG_IOTEDU_DHT11_PIN",
-    String(input.dht11Gpio),
-    "dht11_pin_mismatch",
-    `Compiled DHT11 pin does not match GPIO${input.dht11Gpio}`,
-  );
+  if (input.pinExpectations) {
+    for (const pin of input.pinExpectations) {
+      expect(pin.key, pin.value, "gpio_mismatch", `Compiled ${pin.key} is not ${pin.value}`);
+    }
+  } else {
+    expect(
+      "CONFIG_IOTEDU_DHT11_PIN",
+      String(input.dht11Gpio),
+      "dht11_pin_mismatch",
+      `Compiled DHT11 pin does not match GPIO${input.dht11Gpio}`,
+    );
+  }
   expect(
     "CONFIG_APP_PROJECT_VER_FROM_CONFIG",
     "y",
@@ -339,41 +348,137 @@ export function firmwareCompatibilityIssues(input: {
       message: `OTA header ${input.ota.vendorId}/${input.ota.productId} ${input.ota.version} ${input.ota.versionString} does not match the compiled firmware`,
     });
   }
-  if (input.vendorId !== 0xfff1 || input.productId !== 0x8000) {
+  const expectedProductId = input.expectedProductId ?? 0x8000;
+  if (input.vendorId !== 0xfff1 || input.productId !== expectedProductId) {
     issues.push({
       level: "error",
       code: "identity_mismatch",
-      message: "Vendor and product identifiers are not the verified test VID 0xFFF1 and PID 0x8000",
+      message: `Vendor and product identifiers are not VID 0xFFF1 and PID 0x${expectedProductId.toString(16).toUpperCase()}`,
     });
   }
   return issues;
 }
 
+export type ProgrammingToolCode = "ok" | "toolchain_not_installed" | "toolchain_not_activated" | "tools_unavailable";
+
 export interface ToolchainInspection {
   nativeAvailable: boolean;
+  programmingAvailable: boolean;
+  programmingCode: ProgrammingToolCode;
   idfPathConfigured: boolean;
   espMatterPathConfigured: boolean;
   activateConfigured: boolean;
+  source: "environment" | "discovered" | "incomplete";
+  detail: string;
+  childEnv: NodeJS.ProcessEnv;
+}
+
+async function fileExists(file: string | undefined): Promise<boolean> {
+  if (!file) return false;
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isIdf541(idfPath: string): Promise<boolean> {
+  try {
+    const text = await readFile(path.join(idfPath, "tools", "cmake", "version.cmake"), "utf8");
+    return /IDF_VERSION_MAJOR\s+5/.test(text) && /IDF_VERSION_MINOR\s+4/.test(text) && /IDF_VERSION_PATCH\s+1/.test(text);
+  } catch {
+    return false;
+  }
 }
 
 export async function inspectToolchain(env: NodeJS.ProcessEnv = process.env): Promise<ToolchainInspection> {
-  async function exists(file: string | undefined): Promise<boolean> {
-    if (!file) return false;
-    try {
-      await access(file);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  const idfPathConfigured = await exists(env.IDF_PATH ? path.join(env.IDF_PATH, "tools", "idf.py") : undefined);
-  const espMatterPathConfigured = await exists(env.ESP_MATTER_PATH ? path.join(env.ESP_MATTER_PATH, "components") : undefined);
-  const activateConfigured = await exists(env.IDF_ACTIVATE);
+  const idfPathConfigured = await fileExists(env.IDF_PATH ? path.join(env.IDF_PATH, "tools", "idf.py") : undefined)
+    && (env.IDF_PATH ? await isIdf541(env.IDF_PATH) : false);
+  const espMatterPathConfigured = await fileExists(env.ESP_MATTER_PATH ? path.join(env.ESP_MATTER_PATH, "components") : undefined);
+  const activateConfigured = await fileExists(env.IDF_ACTIVATE);
+  const programmingAvailable = idfPathConfigured && activateConfigured;
+  const nativeAvailable = programmingAvailable && espMatterPathConfigured;
+  const programmingCode: ProgrammingToolCode = !idfPathConfigured
+    ? "toolchain_not_installed"
+    : !activateConfigured
+      ? "toolchain_not_activated"
+      : "ok";
   return {
-    nativeAvailable: idfPathConfigured && espMatterPathConfigured && activateConfigured,
+    nativeAvailable,
+    programmingAvailable,
+    programmingCode,
     idfPathConfigured,
     espMatterPathConfigured,
     activateConfigured,
+    source: nativeAvailable ? "environment" : "incomplete",
+    detail: programmingDetail({ idfPathConfigured, activateConfigured, programmingAvailable, espMatterPathConfigured, nativeAvailable, activated: true }),
+    childEnv: env,
+  };
+}
+
+function programmingDetail(input: {
+  idfPathConfigured: boolean;
+  activateConfigured: boolean;
+  programmingAvailable: boolean;
+  espMatterPathConfigured: boolean;
+  nativeAvailable: boolean;
+  activated: boolean;
+}): string {
+  if (!input.idfPathConfigured) {
+    return "ESP-IDF v5.4.1 is not installed. IoT.Edu looked for the v5.4.1 toolchain. A missing toolchain is not a missing USB device.";
+  }
+  if (!input.activateConfigured) {
+    return "ESP-IDF v5.4.1 is installed, but its activation script was not found. The programming environment is not activated.";
+  }
+  if (!input.programmingAvailable) {
+    return "ESP-IDF v5.4.1 was found, but the programming tools could not be started.";
+  }
+  if (!input.espMatterPathConfigured) {
+    return "ESP-IDF v5.4.1 programming tools are available. ESP_MATTER_PATH was not found, so firmware compilation stays unavailable. Chip identification does not need it.";
+  }
+  return input.nativeAvailable
+    ? "ESP-IDF v5.4.1 programming tools are available. A manual export in the terminal is not required."
+    : "ESP-IDF v5.4.1 programming tools are available.";
+}
+
+export async function discoverToolchain(env: NodeJS.ProcessEnv = process.env, home = env.HOME ?? env.USERPROFILE ?? ""): Promise<ToolchainInspection> {
+  const idfFromEnv = env.IDF_PATH && await fileExists(path.join(env.IDF_PATH, "tools", "idf.py")) && await isIdf541(env.IDF_PATH) ? env.IDF_PATH : null;
+  const matterFromEnv = env.ESP_MATTER_PATH && await fileExists(path.join(env.ESP_MATTER_PATH, "components")) ? env.ESP_MATTER_PATH : null;
+  const activateFromEnv = env.IDF_ACTIVATE && await fileExists(env.IDF_ACTIVATE) ? env.IDF_ACTIVATE : null;
+  const idfCandidate = path.join(home, ".espressif", "v5.4.1", "esp-idf");
+  const matterCandidate = path.join(home, "esp", "esp-matter");
+  const activateCandidate = path.join(home, ".espressif", "tools", "activate_idf_v5.4.1.sh");
+  const idfPath = idfFromEnv ?? (await fileExists(path.join(idfCandidate, "tools", "idf.py")) && await isIdf541(idfCandidate) ? idfCandidate : null);
+  const espMatterPath = matterFromEnv ?? (await fileExists(path.join(matterCandidate, "components")) ? matterCandidate : null);
+  const activate = activateFromEnv
+    ?? (await fileExists(activateCandidate) ? activateCandidate : null)
+    ?? (idfPath && await fileExists(path.join(idfPath, "export.sh")) ? path.join(idfPath, "export.sh") : null);
+  const childEnv: NodeJS.ProcessEnv = { ...env };
+  if (idfPath) childEnv.IDF_PATH = idfPath;
+  if (espMatterPath) childEnv.ESP_MATTER_PATH = espMatterPath;
+  if (activate) childEnv.IDF_ACTIVATE = activate;
+  const programmingAvailable = Boolean(idfPath && activate);
+  const nativeAvailable = programmingAvailable && Boolean(espMatterPath);
+  const usedDiscovery = programmingAvailable && !(idfFromEnv && activateFromEnv && matterFromEnv);
+  const programmingCode: ProgrammingToolCode = idfPath ? (activate ? "ok" : "toolchain_not_activated") : "toolchain_not_installed";
+  return {
+    nativeAvailable,
+    programmingAvailable,
+    programmingCode,
+    idfPathConfigured: Boolean(idfPath),
+    espMatterPathConfigured: Boolean(espMatterPath),
+    activateConfigured: Boolean(activate),
+    source: programmingAvailable ? (usedDiscovery ? "discovered" : "environment") : "incomplete",
+    detail: programmingDetail({
+      idfPathConfigured: Boolean(idfPath),
+      activateConfigured: Boolean(activate),
+      programmingAvailable,
+      espMatterPathConfigured: Boolean(espMatterPath),
+      nativeAvailable,
+      activated: true,
+    }),
+    childEnv,
   };
 }
 
@@ -400,3 +505,20 @@ export function appFitsPartition(appBytes: number, slotBytes: number): Validatio
 }
 
 export { encodeMatterOtaImage, inspectMatterOtaImage, ESP32H2_CHIP_ID, type MatterOtaInspection } from "./ota-image.js";
+export { safeRelativePath, safeUploadName } from "./library-paths.js";
+export { extractSafeZip, UnsafeArchiveError, zipCrc32 } from "./safe-zip.js";
+export { compileLibraryComponent } from "./library-compile.js";
+export { nextSoftwareVersion } from "./firmware-release.js";
+export {
+  approvedLibraryRecords,
+  libraryFingerprint,
+  sourceContentHash,
+  validateLibraryComponent,
+  type LibraryBoardProfile,
+  type NativeCompileReport,
+  type LibraryCheckInput,
+  type LibraryCheckResult,
+  type LibraryCheckedFile,
+  type LibraryGpioInput,
+  type LibrarySourceFile,
+} from "./library-validation.js";

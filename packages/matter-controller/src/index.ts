@@ -12,9 +12,10 @@ import {
 import { BACKUP_INSTRUCTIONS } from "./errors.js";
 
 export { MatterOperationError } from "./errors.js";
+export { projectPresence } from "./presence.js";
 export { LiveMatterManagementService, normalizePairingCode } from "./service.js";
 export { redactSecrets } from "./redact.js";
-export { applyProviderEvent, confirmInstalledVersion, initialOtaStages, interruptRunningJob, recordStage } from "./ota-job.js";
+export { applyProviderEvent, confirmInstalledVersion, initialOtaStages, interruptRunningJob, reconcileObservedFirmware, recordStage, transferCompleted, type ExpectedFirmwareIdentity } from "./ota-job.js";
 
 /**
  * Phase 1 stand-in. It records a local node and never opens a Matter session,
@@ -116,6 +117,48 @@ export class MockMatterManagementService implements MatterManagementService {
     };
   }
 
+  async listUnsavedPeers() {
+    return [];
+  }
+
+  async recoverExisting(): Promise<never> {
+    throw new Error("Mock mode has no Matter fabric to recover.");
+  }
+
+  async reconciliationPlan() {
+    return {
+      controllerIdentityPreserved: true,
+      identityReady: false,
+      executed: false as const,
+      credentialStoreEdited: false as const,
+      peers: [],
+      retireAfterFactoryReset: "Mock mode has no Matter peers. ClientNode.delete() was not called.",
+      notUsed: ["ClientNode.decommission()", "Peers.erase()"],
+      blocker: "Mock mode has no persistent controller peers. The physical factory-reset test is not started from mock mode.",
+    };
+  }
+
+  async retireUnsavedPeer(input: import("@iotedu/contracts").RetirePeerRequest): Promise<import("@iotedu/contracts").RetirePeerResult> {
+    void input;
+    throw new Error("Mock mode has no persistent controller peers. Nothing was removed.");
+  }
+
+  async removeNode(nodeId: string, input: import("@iotedu/contracts").RemoveNodeRequest) {
+    const node = await this.nodes.getById(nodeId);
+    if (!node) throw new Error("Node not found");
+    if (input.phrase !== node.name) throw new Error("The confirmation phrase does not match the node name. Nothing was removed.");
+    if (input.mode === "decommission") {
+      throw new Error("Mock mode cannot remove a fabric from a device. Nothing was removed.");
+    }
+    await this.nodes.delete(node.id);
+    return {
+      mode: "forget" as const,
+      physicalFabricRemoved: false,
+      localRecordRemoved: true,
+      message: "The local record was removed. Mock mode did not contact a device.",
+    };
+  }
+
   async refreshNode(nodeId: string) {
     const node = await this.nodes.getById(nodeId);
     if (!node) throw new Error("Node not found");
@@ -135,7 +178,22 @@ export class MockMatterManagementService implements MatterManagementService {
   }
 
   async getOtaProviderStatus(): Promise<import("@iotedu/contracts").OtaProviderStatus> {
-    return { running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true };
+    return { running: false, endpointNumber: null, fabricScoped: false, ledgerOffline: true, architecture: "unavailable" };
+  }
+
+  async readOtaRequestor(matterNodeId: string): Promise<import("@iotedu/contracts").OtaRequestorReport> {
+    return {
+      matterNodeId,
+      clusterPresent: true,
+      updatePossible: true,
+      updateState: 0,
+      updateStateProgress: null,
+      defaultProviderCount: 0,
+      announceAccepted: true,
+      controllerCanAnnounce: true,
+      aclRead: "read",
+      detail: "Mock mode reports an OTA Requestor and an Operate grant. No device was read and no access-control entry was changed.",
+    };
   }
 
   async beginOta(_input: { matterNodeId: string; image: Uint8Array; vendorId: number; productId: number; softwareVersion: number }): Promise<void> {
@@ -164,5 +222,9 @@ export class MemoryNodeRepository implements NodeRepository {
 
   async save(node: ManagedNode) {
     this.nodes.set(node.id, node);
+  }
+
+  async delete(id: string) {
+    this.nodes.delete(id);
   }
 }

@@ -15,17 +15,27 @@ def main() -> int:
         print("unsupported baud", file=sys.stderr)
         return 2
     try:
-        handle = serial.Serial(port, baudrate=115200, timeout=0.5)
+        handle = serial.Serial()
+        handle.port = port
+        handle.baudrate = 115200
+        handle.timeout = 0.5
+        handle.dtr = False
+        handle.rts = False
+        handle.open()
+        print("note: uart console open", flush=True)
     except serial.SerialException as exc:
         print(f"could not open port: {exc}", file=sys.stderr)
         return 1
+    received = 0
     try:
         while True:
             chunk = handle.readline()
             if chunk:
+                received += len(chunk)
                 sys.stdout.buffer.write(chunk)
                 sys.stdout.buffer.flush()
     finally:
+        print(f"note: bytes received {received}", flush=True)
         handle.close()
 
 

@@ -5,15 +5,11 @@ if [[ -z "${IDF_PATH:-}" ]]; then
   echo "IDF_PATH is not set" >&2
   return 2
 fi
-if [[ -z "${ESP_MATTER_PATH:-}" ]]; then
-  echo "ESP_MATTER_PATH is not set" >&2
-  return 2
-fi
 if [[ ! -f "$IDF_PATH/tools/idf.py" ]]; then
   echo "IDF_PATH does not contain tools/idf.py: $IDF_PATH" >&2
   return 2
 fi
-if [[ ! -d "$ESP_MATTER_PATH/components" ]]; then
+if [[ -n "${ESP_MATTER_PATH:-}" && ! -d "$ESP_MATTER_PATH/components" ]]; then
   echo "ESP_MATTER_PATH does not look like esp-matter: $ESP_MATTER_PATH" >&2
   return 2
 fi

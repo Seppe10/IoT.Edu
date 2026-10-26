@@ -11,6 +11,8 @@ backup/
 .env
 .env.local
 data/
+flash-backups/
+*.flashbackup
 
 # Node
 node_modules/

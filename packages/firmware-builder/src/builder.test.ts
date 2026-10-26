@@ -174,6 +174,25 @@ describe("firmware checks", () => {
       dependencyLockMatchesReference: true,
     });
     expect(match).toEqual([]);
+    const light = firmwareCompatibilityIssues({
+      sdkconfig: sdkconfig.replace("CONFIG_IOTEDU_DHT11_PIN=4", "CONFIG_IOTEDU_LIGHT_ADC_GPIO=4").replace("CONFIG_DEVICE_PRODUCT_ID=0x8000", "CONFIG_DEVICE_PRODUCT_ID=0x8001"),
+      layoutId: "same",
+      expectedLayoutId: "same",
+      softwareVersion: 2,
+      softwareVersionString: "1.1.0",
+      dht11Gpio: 4,
+      pinExpectations: [{ key: "CONFIG_IOTEDU_LIGHT_ADC_GPIO", value: "4" }],
+      expectedProductId: 0x8001,
+      appBytes: 1591904,
+      slotBytes: 0x1e0000,
+      appVersion: "1.1.0",
+      appProject: "sensors",
+      ota: { vendorId: 0xfff1, productId: 0x8001, version: 2, versionString: "1.1.0" },
+      vendorId: 0xfff1,
+      productId: 0x8001,
+      dependencyLockMatchesReference: true,
+    });
+    expect(light).toEqual([]);
   });
 
   it("rejects an image larger than the OTA slot and warns above 90%", () => {

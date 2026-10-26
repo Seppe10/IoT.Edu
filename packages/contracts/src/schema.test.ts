@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commissionRequestSchema, componentManifestSchema, firmwareBuildRequestSchema, programRequestSchema } from "./index.js";
+import { commissionRequestSchema, componentManifestSchema, eraseRequestSchema, firmwareBuildRequestSchema, programRequestSchema } from "./index.js";
 
 describe("contracts", () => {
   it("rejects a manifest that claims a remote source", () => {
@@ -68,6 +68,31 @@ describe("contracts", () => {
       path: "smart_home",
       name: "Bench",
       pairingCode: "MT:Y.ABCDEF",
+      confirm: true,
+    });
+    expect(accepted.success).toBe(true);
+  });
+
+  it("requires a separate device confirmation before flash erase", () => {
+    const rejected = eraseRequestSchema.safeParse({
+      port: "/dev/cu.usbmodem143401",
+      buildId: "pkg",
+      backupId: "backup",
+      mac: "48:31:b7:cf:3d:52",
+      confirmDevice: true,
+      confirmBackup: true,
+      confirm: true,
+    });
+    expect(rejected.success).toBe(false);
+    const accepted = eraseRequestSchema.safeParse({
+      port: "/dev/cu.usbmodem143401",
+      consolePort: "/dev/cu.usbmodem5AF61108281",
+      buildId: "pkg",
+      backupId: "backup",
+      mac: "48:31:b7:cf:3d:52",
+      confirmDevice: true,
+      confirmBackup: true,
+      acknowledgeCommissioningLoss: true,
       confirm: true,
     });
     expect(accepted.success).toBe(true);

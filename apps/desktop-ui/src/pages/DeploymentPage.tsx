@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { OtaJob } from "@iotedu/contracts";
 import { api } from "../api";
+import { formatLocalDateTime } from "../datetime";
 
 export function DeploymentPage() {
   const { id = "" } = useParams();

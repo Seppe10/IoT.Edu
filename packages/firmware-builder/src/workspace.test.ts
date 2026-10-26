@@ -60,6 +60,25 @@ describe("DHT11 workspace generator", () => {
     expect(defaults).toContain('CONFIG_APP_PROJECT_VER="1.1.0"');
     expect(defaults).toContain("CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=2");
     expect(defaults).toContain("CONFIG_APP_PROJECT_VER_FROM_CONFIG=y");
+    expect(defaults).toContain("CONFIG_BUTTON_LONG_PRESS_TIME_MS=5000");
+  });
+
+  it("writes firmware 1.3.0 and SoftwareVersion 4 together", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "iotedu-fw-"));
+    await generateDht11Workspace({
+      repoRoot,
+      outDir,
+      softwareVersion: 4,
+      softwareVersionString: "1.3.0",
+      dht11Gpio: 4,
+    });
+    const cmake = await readFile(path.join(outDir, "CMakeLists.txt"), "utf8");
+    const defaults = await readFile(path.join(outDir, "sdkconfig.defaults"), "utf8");
+    expect(cmake).toContain('set(PROJECT_VER "1.3.0")');
+    expect(cmake).toContain("set(PROJECT_VER_NUMBER 4)");
+    expect(defaults).toContain('CONFIG_APP_PROJECT_VER="1.3.0"');
+    expect(defaults).toContain("CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=4");
+    expect(defaults).toContain("CONFIG_ENABLE_OTA_REQUESTOR=y");
   });
 
   it("refuses the factory-reset pin", async () => {

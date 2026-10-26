@@ -6,7 +6,12 @@
   "exports": {
     ".": "./src/index.ts",
     "./native": "./src/native.ts",
-    "./programmer": "./src/programmer.ts"
+    "./catalogue-workspace": "./src/catalogue-workspace.ts",
+    "./firmware-release": "./src/firmware-release.ts",
+    "./sdk-warning-baseline": "./src/sdk-warning-baseline.ts",
+    "./programmer": "./src/programmer.ts",
+    "./recovery": "./src/recovery.ts",
+    "./usb-ports": "./src/usb-ports.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -1,4 +1,5 @@
 #include <iotedu_dht11.h>
+#include <iotedu_dht11_ranges.h>
 
 #include "dht11.h"
 
@@ -61,8 +62,18 @@ static void dht11_task(void *arg)
 
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "DHT11 Temperature: %d°C, Humidity: %u%%RH", reading.temperature, reading.humidity);
-            temp_sensor_notification(config->temperature_endpoint_id, static_cast<float>(reading.temperature), NULL);
-            humidity_sensor_notification(config->humidity_endpoint_id, static_cast<float>(reading.humidity), NULL);
+            if (iotedu_dht11_temperature_acceptable(reading.temperature)) {
+                temp_sensor_notification(config->temperature_endpoint_id, static_cast<float>(reading.temperature), NULL);
+            } else {
+                ESP_LOGW(TAG, "DHT11 temperature %d C is outside %d-%d C and was not reported",
+                         reading.temperature, IOTEDU_DHT11_TEMP_MIN_C, IOTEDU_DHT11_TEMP_MAX_C);
+            }
+            if (iotedu_dht11_humidity_acceptable(reading.humidity)) {
+                humidity_sensor_notification(config->humidity_endpoint_id, static_cast<float>(reading.humidity), NULL);
+            } else {
+                ESP_LOGW(TAG, "DHT11 humidity %u%% is outside %d-%d%% and was not reported",
+                         reading.humidity, IOTEDU_DHT11_HUMIDITY_MIN_PERCENT, IOTEDU_DHT11_HUMIDITY_MAX_PERCENT);
+            }
         } else {
             ESP_LOGW(TAG, "DHT11 read failed: %s", esp_err_to_name(err));
         }
@@ -78,6 +89,9 @@ esp_err_t iotedu_dht11_register(esp_matter::node_t *node)
     }
 
     temperature_sensor::config_t temp_sensor_config;
+    temp_sensor_config.temperature_measurement.measured_value = nullable<int16_t>();
+    temp_sensor_config.temperature_measurement.min_measured_value = nullable<int16_t>(IOTEDU_DHT11_TEMP_MIN_CENTI);
+    temp_sensor_config.temperature_measurement.max_measured_value = nullable<int16_t>(IOTEDU_DHT11_TEMP_MAX_CENTI);
     endpoint_t *temp_sensor_ep = temperature_sensor::create(node, &temp_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     if (temp_sensor_ep == nullptr) {
         ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint");
@@ -85,6 +99,9 @@ esp_err_t iotedu_dht11_register(esp_matter::node_t *node)
     }
 
     humidity_sensor::config_t humidity_sensor_config;
+    humidity_sensor_config.relative_humidity_measurement.measured_value = nullable<uint16_t>();
+    humidity_sensor_config.relative_humidity_measurement.min_measured_value = nullable<uint16_t>(IOTEDU_DHT11_HUMIDITY_MIN_CENTI);
+    humidity_sensor_config.relative_humidity_measurement.max_measured_value = nullable<uint16_t>(IOTEDU_DHT11_HUMIDITY_MAX_CENTI);
     endpoint_t *humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     if (humidity_sensor_ep == nullptr) {
         ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint");

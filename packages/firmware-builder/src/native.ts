@@ -11,6 +11,7 @@ import {
   sdkconfigValue,
   type BoardProfile,
 } from "./index.js";
+import { classifyCompilerOutput, readIdfVersion, type CompilerDiagnostic } from "./compiler-diagnostics.js";
 import { generateDht11Workspace } from "./workspace.js";
 
 export interface NativeBuildSpec {
@@ -22,6 +23,11 @@ export interface NativeBuildSpec {
   dht11Gpio: number;
   signal: AbortSignal;
   onLog: (line: string) => void;
+  prepareWorkspace?: () => Promise<{
+    partitionLayoutId: string;
+    pinExpectations?: { key: string; value: string }[];
+    productId?: number;
+  }>;
 }
 
 export interface NativeArtifact {
@@ -39,6 +45,8 @@ export interface NativeBuildResult {
   issues: ValidationIssue[];
   artifacts: NativeArtifact[];
   summary: string[];
+  diagnostics?: CompilerDiagnostic[];
+  idfVersion?: string | null;
 }
 
 const ARTIFACT_NAMES: Record<string, string> = {
@@ -130,6 +138,8 @@ export async function runNativeDht11Build(spec: NativeBuildSpec): Promise<Native
   const summary: string[] = [];
   const issues: ValidationIssue[] = [];
   const artifacts: NativeArtifact[] = [];
+  const diagnostics: CompilerDiagnostic[] = [];
+  let idfVersion: string | null = null;
   let release = () => {};
   const finish = (ok: boolean, cancelled: boolean, layoutId: string | null): NativeBuildResult => ({
     ok,
@@ -139,7 +149,22 @@ export async function runNativeDht11Build(spec: NativeBuildSpec): Promise<Native
     issues,
     artifacts,
     summary,
+    diagnostics,
+    idfVersion,
   });
+  const recordDiagnostics = (text: string) => {
+    idfVersion ??= readIdfVersion(text);
+    const found = classifyCompilerOutput(text, spec.workspaceDir);
+    diagnostics.push(...found);
+    const componentWarnings = found.filter((item) => item.origin === "component" && item.level === "warning");
+    const sdkWarnings = found.filter((item) => item.origin === "sdk" && item.level === "warning");
+    for (const item of componentWarnings.slice(0, 20)) {
+      issues.push({ level: "warning", code: "component_warning", message: `${item.file}: ${item.message}` });
+    }
+    for (const item of sdkWarnings.slice(0, 8)) {
+      issues.push({ level: "warning", code: "sdk_warning", message: `${item.file}: ${item.message}` });
+    }
+  };
 
   try {
     release = lockWorkspace(spec.workspaceDir);
@@ -147,18 +172,28 @@ export async function runNativeDht11Build(spec: NativeBuildSpec): Promise<Native
     await mkdir(spec.artifactDir, { recursive: true });
     if (spec.signal.aborted) return finish(false, true, null);
 
-    spec.onLog("Generating an isolated DHT11 workspace.");
-    const generated = await generateDht11Workspace({
-      repoRoot: spec.repoRoot,
-      outDir: spec.workspaceDir,
-      softwareVersion: spec.softwareVersion,
-      softwareVersionString: spec.softwareVersionString,
-      dht11Gpio: spec.dht11Gpio,
-    });
+    const prepared = spec.prepareWorkspace ? await spec.prepareWorkspace() : null;
+    const generated = prepared
+      ? {
+          outDir: spec.workspaceDir,
+          partitionLayoutId: prepared.partitionLayoutId,
+          dht11Gpio: spec.dht11Gpio,
+          softwareVersion: spec.softwareVersion,
+          softwareVersionString: spec.softwareVersionString,
+        }
+      : await generateDht11Workspace({
+          repoRoot: spec.repoRoot,
+          outDir: spec.workspaceDir,
+          softwareVersion: spec.softwareVersion,
+          softwareVersionString: spec.softwareVersionString,
+          dht11Gpio: spec.dht11Gpio,
+        });
+    spec.onLog(spec.prepareWorkspace ? "Using the catalogue firmware workspace." : "Generating an isolated DHT11 workspace.");
     summary.push(`Workspace ${generated.outDir}`);
     summary.push(`Requested version ${generated.softwareVersion} / ${generated.softwareVersionString}`);
 
     const target = await runCaptured(script, ["idf", "-C", spec.workspaceDir, "set-target", "esp32h2"], spec.onLog, spec.signal);
+    recordDiagnostics(`${target.text}\n`);
     if (target.cancelled) return finish(false, true, generated.partitionLayoutId);
     if (target.code !== 0) {
       issues.push({ level: "error", code: "compile_failed", message: "Setting the ESP32-H2 target failed" });
@@ -167,6 +202,7 @@ export async function runNativeDht11Build(spec: NativeBuildSpec): Promise<Native
 
     spec.onLog("Compiling the firmware.");
     const built = await runCaptured(script, ["idf", "-C", spec.workspaceDir, "build"], spec.onLog, spec.signal);
+    recordDiagnostics(built.text);
     if (built.cancelled) return finish(false, true, generated.partitionLayoutId);
     if (built.code !== 0) {
       issues.push({ level: "error", code: "compile_failed", message: "The firmware compiler failed" });
@@ -250,6 +286,8 @@ export async function runNativeDht11Build(spec: NativeBuildSpec): Promise<Native
         softwareVersion: spec.softwareVersion,
         softwareVersionString: spec.softwareVersionString,
         dht11Gpio: spec.dht11Gpio,
+        pinExpectations: prepared?.pinExpectations,
+        expectedProductId: prepared?.productId,
         appBytes: appBinary.length,
         slotBytes: slot?.size ?? 0,
         appVersion: described.version,
@@ -261,6 +299,11 @@ export async function runNativeDht11Build(spec: NativeBuildSpec): Promise<Native
       }),
     );
 
+    const componentErrors = diagnostics.filter((item) => item.origin === "component" && item.level === "error").length;
+    const componentWarnings = diagnostics.filter((item) => item.origin === "component" && item.level === "warning").length;
+    const sdkErrors = diagnostics.filter((item) => item.origin === "sdk" && item.level === "error").length;
+    const sdkWarnings = diagnostics.filter((item) => item.origin === "sdk" && item.level === "warning").length;
+    summary.push(`Component diagnostics: ${componentErrors} errors, ${componentWarnings} warnings. SDK diagnostics: ${sdkErrors} errors, ${sdkWarnings} warnings.`);
     const failed = issues.some((issue) => issue.level === "error");
     const names = [
       "sensors.bin",

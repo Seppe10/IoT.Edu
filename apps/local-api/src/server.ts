@@ -1,8 +1,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, readBoardProfile } from "./app.js";
+import { loadEnvFile } from "./load-env.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+await loadEnvFile(path.join(path.dirname(fileURLToPath(import.meta.url)), "../.env"));
 
 function defaultDataDir(): string {
   if (process.env.DATA_DIR) return process.env.DATA_DIR;
@@ -17,6 +19,11 @@ const host = process.env.IOTEDU_HOST ?? "127.0.0.1";
 if (host !== "127.0.0.1") {
   throw new Error("Refusing to bind the administrative API outside 127.0.0.1");
 }
+
+process.on("unhandledRejection", (reason) => {
+  const detail = reason instanceof Error ? reason.message : "unknown";
+  console.error(JSON.stringify({ source: "iotedu-api", message: "A background task failed. The API process stayed up.", detail }));
+});
 
 const port = Number(process.env.PORT ?? 3847);
 const profile = await readBoardProfile(repoRoot);

@@ -2,10 +2,21 @@ import path from "node:path";
 import { config } from "@matter/nodejs/config";
 import { FABRIC_LABEL } from "@iotedu/contracts";
 import { MatterOperationError } from "./errors.js";
+import {
+  basicInformationAttributePaths,
+  classifyIdentityThrown,
+  interpretBasicInformation,
+  logIdentityDiagnostic,
+  normaliseAttributeReport,
+  type AttributeObservation,
+  type AttributePath,
+} from "./identity-read.js";
 import { IDENTITY_FILE, protectStorage } from "./identity.js";
 import { redactSecrets } from "./redact.js";
 import type { ControllerRuntimeInfo, ManagementTransport, ObservedNode, SharingWindow } from "./session.js";
 import { attachOtaProvider, type AnnouncedPeer, type AttachedOta } from "./ota-provider.js";
+import { interpretOtaRequestor } from "./ota-requestor.js";
+import { interpretApplicationModel, partsFrom, DESCRIPTOR_CLUSTER_ID, DEVICE_TYPE_LIST_ATTRIBUTE_ID, PARTS_LIST_ATTRIBUTE_ID, SERVER_LIST_ATTRIBUTE_ID } from "./application-model.js";
 
 const MATTER_JS_VERSION = "0.18.0";
 const CONTROLLER_ID = "iotedu-management";
@@ -28,8 +39,12 @@ interface MatterControllerNode {
 interface RemotePeer {
   id: string;
   peerAddress?: { nodeId?: unknown };
-  lifecycle: { isConnected?: boolean };
+  lifecycle: { isConnected?: boolean; isOnline?: boolean };
+  state?: { commissioning?: { commissionedAt?: number; addresses?: unknown[] } };
+  interaction?: { read(request: unknown): AsyncIterable<AsyncIterable<unknown>> };
   start(): Promise<void>;
+  decommission?(): Promise<void>;
+  delete?(): Promise<void>;
   act(purpose: string, actor: (agent: Record<string, unknown>) => Promise<ObservedFacts>): Promise<ObservedFacts>;
   openEnhancedCommissioningWindow(timeout?: unknown): Promise<{ manualPairingCode?: string; qrPairingCode?: string }>;
 }
@@ -41,6 +56,7 @@ interface ObservedFacts {
   hardwareVersionString: string | null;
   softwareVersion: number | null;
   softwareVersionString: string | null;
+  serialNumber: string | null;
   commissionedFabricCount: number | null;
   firmwareUpdateEligible: boolean | null;
 }
@@ -113,7 +129,8 @@ export async function openMatterTransport(storageDir: string, options: { create:
 }
 
 interface ReadApi {
-  (selector: unknown): unknown;
+  (options: { fabricFilter?: boolean; attributes?: AttributePath[] }, ...selectors: unknown[]): Record<string, unknown>;
+  (...selectors: unknown[]): unknown;
   Attribute(selector: { endpoint: number }): unknown;
 }
 
@@ -145,7 +162,14 @@ class MatterJsTransport implements ManagementTransport {
     };
   }
 
-  async commissionOnExistingNetwork(pairingCode: string): Promise<ObservedNode> {
+  async commissionOnExistingNetwork(
+    pairingCode: string,
+    onProgress?: (event: import("@iotedu/contracts").CommissionProgress) => void,
+  ): Promise<ObservedNode> {
+    onProgress?.({
+      stage: "discovering",
+      message: "Looking for the commissioned device on the local IPv6 network. The pairing session and IoT.Edu fabric are added in this step. Bluetooth is not used, and the Thread dataset is not changed.",
+    });
     let peer: RemotePeer;
     try {
       peer = await withTimeout(this.node.peers.commission({
@@ -159,12 +183,68 @@ class MatterJsTransport implements ManagementTransport {
     } catch (error) {
       throw mapCommissionError(error);
     }
+    onProgress?.({
+      stage: "operational_case",
+      message: "The controller finished PASE, NOC installation, operational discovery, CASE, and CommissioningComplete. No second commissioning session will be opened.",
+    });
+    onProgress?.({
+      stage: "verifying_firmware",
+      message: "Reading Basic Information on endpoint 0, including SoftwareVersion. A missing optional attribute is not a failure.",
+    });
     return this.describe(peer, true);
+  }
+
+  async listCommissionedPeers() {
+    const peers = this.node.peers.commissioned.flatMap((peer) => {
+      const matterNodeId = idText(peer.peerAddress?.nodeId);
+      if (!matterNodeId) return [];
+      const commissionedAt = peer.state?.commissioning?.commissionedAt;
+      return [{ matterNodeId, commissionedAt: typeof commissionedAt === "number" ? commissionedAt : null }];
+    });
+    peers.sort((left, right) => (right.commissionedAt ?? 0) - (left.commissionedAt ?? 0));
+    return peers;
+  }
+
+  async decommissionPeer(matterNodeId: string): Promise<{ removedOnDevice: boolean; detail: string }> {
+    const peer = this.find(matterNodeId);
+    if (!peer.decommission) {
+      throw new MatterOperationError("connection_failed", "This Matter.js controller cannot remove its own fabric. Nothing was removed.");
+    }
+    await withTimeout(peer.decommission(), 45_000, "IoT.Edu fabric removal");
+    const stillThere = (await this.listCommissionedPeers()).some((item) => item.matterNodeId === matterNodeId);
+    if (stillThere) {
+      throw new MatterOperationError(
+        "connection_failed",
+        "The device still has this IoT.Edu node. The local record was kept. Apple Home fabrics were not targeted.",
+      );
+    }
+    if (peer.delete) await peer.delete();
+    return {
+      removedOnDevice: true,
+      detail: `IoT.Edu's own fabric for Matter node ${matterNodeId} was removed after the device confirmed it. Other fabrics were not targeted.`,
+    };
+  }
+
+  async forgetPeer(matterNodeId: string): Promise<void> {
+    const peer = this.node.peers.commissioned.find((item) => idText(item.peerAddress?.nodeId) === matterNodeId);
+    if (!peer) return;
+    if (!peer.delete) {
+      throw new MatterOperationError("connection_failed", "The local peer could not be forgotten. The managed-node record was kept.");
+    }
+    await peer.delete();
   }
 
   async refresh(matterNodeId: string): Promise<ObservedNode> {
     const peer = this.find(matterNodeId);
-    return this.describe(peer, true);
+    try {
+      return await this.describe(peer, true, { timeoutMs: 45_000 });
+    } catch (first) {
+      try {
+        return await this.describe(peer, true, { forceStart: true, timeoutMs: 45_000 });
+      } catch {
+        throw first;
+      }
+    }
   }
 
   async reconnect(): Promise<ObservedNode[]> {
@@ -172,7 +252,11 @@ class MatterJsTransport implements ManagementTransport {
     for (const peer of this.node.peers.commissioned) {
       const id = idText(peer.peerAddress?.nodeId);
       if (!id) continue;
-      nodes.push(await this.describe(peer, true));
+      try {
+        nodes.push(await this.describe(peer, true));
+      } catch {
+        nodes.push(emptyObservation(id, "offline"));
+      }
     }
     return nodes;
   }
@@ -198,6 +282,52 @@ class MatterJsTransport implements ManagementTransport {
   async close(): Promise<void> {
     await this.node.close();
     if (active?.node === this.node) active = null;
+  }
+
+  async readOtaRequestor(matterNodeId: string) {
+    const peer = this.find(matterNodeId);
+    await withTimeout(peer.start(), 45_000, "CASE session");
+    const requestorPaths = [0x0000, 0x0001, 0x0002, 0x0003, 0xfff9].map((attributeId) => ({
+      endpointId: 0,
+      clusterId: 0x002a,
+      attributeId,
+    }));
+    const reports = await this.collectReports(peer, requestorPaths, matterNodeId, 1, 0);
+    let aclFailed = false;
+    try {
+      reports.push(...await this.collectReports(peer, [{ endpointId: 0, clusterId: 0x001f, attributeId: 0x0000 }], matterNodeId, 1, 0));
+    } catch {
+      aclFailed = true;
+    }
+    return interpretOtaRequestor({
+      matterNodeId,
+      reports,
+      controllerNodeId: this.controllerOperationalNodeId(),
+      aclFailed,
+    });
+  }
+
+  async readApplicationModel(matterNodeId: string) {
+    const peer = this.find(matterNodeId);
+    await withTimeout(peer.start(), 45_000, "CASE session");
+    const partReports = await this.collectReports(peer, [{
+      endpointId: 0,
+      clusterId: DESCRIPTOR_CLUSTER_ID,
+      attributeId: PARTS_LIST_ATTRIBUTE_ID,
+    }], matterNodeId, 1, 0);
+    const parts = [0, ...partsFrom(partReports)];
+    const paths = [...new Set(parts)].slice(0, 16).flatMap((endpointId) => [
+      { endpointId, clusterId: DESCRIPTOR_CLUSTER_ID, attributeId: DEVICE_TYPE_LIST_ATTRIBUTE_ID },
+      { endpointId, clusterId: DESCRIPTOR_CLUSTER_ID, attributeId: SERVER_LIST_ATTRIBUTE_ID },
+    ]);
+    const reports = await this.collectReports(peer, paths, matterNodeId, 1, 0);
+    return interpretApplicationModel([...new Set(parts)], reports);
+  }
+
+  private controllerOperationalNodeId(): string | null {
+    const authority = this.node.env.get(this.fabricAuthority) as { fabrics?: Array<{ nodeId?: unknown }> };
+    const text = idText(authority.fabrics?.[0]?.nodeId);
+    return text && /^\d+$/.test(text) ? text : null;
   }
 
   async otaProviderStatus() {
@@ -233,13 +363,134 @@ class MatterJsTransport implements ManagementTransport {
     return this.ota.exerciseBdxArm();
   }
 
+  private async readFacts(peer: RemotePeer, matterNodeId: string): Promise<ObservedFacts> {
+    const started = Date.now();
+    let attempts = 0;
+    let lastError: MatterOperationError | null = null;
+    while (attempts < 3) {
+      attempts += 1;
+      const elapsedMs = () => Date.now() - started;
+      try {
+        const reports = await this.collectReports(peer, basicInformationAttributePaths(), matterNodeId, attempts, elapsedMs());
+        const interpreted = interpretBasicInformation(reports, {
+          matterNodeId,
+          elapsedMs: elapsedMs(),
+          attempts,
+          sessionOnline: sessionReady(peer) || reports.length > 0,
+        });
+        if (!interpreted.ok) {
+          lastError = interpreted.error;
+          if (attempts < 3 && interpreted.error.detail?.errorClass === "timeout") {
+            logIdentityDiagnostic(interpreted.error.detail, interpreted.error.message);
+            continue;
+          }
+          logIdentityDiagnostic(interpreted.error.detail, interpreted.error.message);
+          throw interpreted.error;
+        }
+        const optional = await this.readOptionalFacts(peer);
+        return {
+          vendorId: interpreted.facts.vendorId,
+          productId: interpreted.facts.productId,
+          hardwareVersion: interpreted.facts.hardwareVersion,
+          hardwareVersionString: interpreted.facts.hardwareVersionString,
+          softwareVersion: interpreted.facts.softwareVersion,
+          softwareVersionString: interpreted.facts.softwareVersionString,
+          serialNumber: interpreted.facts.serialNumber,
+          commissionedFabricCount: optional.commissionedFabricCount,
+          firmwareUpdateEligible: optional.firmwareUpdateEligible,
+        };
+      } catch (error) {
+        const classified = classifyIdentityThrown(error, {
+          stageHint: sessionReady(peer) ? "read_basic_information" : "discover_operational",
+          sessionOnline: sessionReady(peer),
+          matterNodeId,
+          elapsedMs: elapsedMs(),
+          attempts,
+          phase: "read",
+          storedAddress: hasStoredAddress(peer),
+        });
+        lastError = classified;
+        const attributeRetry = classified.detail?.stage === "read_basic_information"
+          && (classified.detail.errorClass === "aborted" || classified.detail.errorClass === "timeout");
+        if (attempts < 3 && attributeRetry) {
+          logIdentityDiagnostic(classified.detail, classified.message);
+          continue;
+        }
+        logIdentityDiagnostic(classified.detail, classified.message);
+        throw classified;
+      }
+    }
+    throw lastError ?? new MatterOperationError(
+      "identity_read_failed",
+      `Basic Information on endpoint 0 was not read for Matter node ${matterNodeId}. No node record was stored.`,
+    );
+  }
+
+  private async collectReports(
+    peer: RemotePeer,
+    attributes: AttributePath[],
+    matterNodeId: string,
+    attempts: number,
+    elapsedMs: number,
+  ): Promise<AttributeObservation[]> {
+    if (!peer.interaction?.read) {
+      throw new MatterOperationError(
+        "identity_read_failed",
+        `This Matter.js controller did not expose an attribute read for Matter node ${matterNodeId}. Cached endpoint state was not used. No node record was stored.`,
+        400,
+        {
+          stage: "read_basic_information",
+          completed: sessionReady(peer) ? ["discover_operational", "case_session"] : [],
+          matterNodeId,
+          endpointId: 0,
+          clusterId: 0x0028,
+          attributeId: 0x0009,
+          errorClass: "unsupported_api",
+          status: null,
+          elapsedMs,
+          attempts,
+        },
+      );
+    }
+    const request = {
+      ...this.read({ fabricFilter: true, attributes }),
+      includeKnownVersions: true,
+    };
+    const found: AttributeObservation[] = [];
+    for await (const chunk of peer.interaction.read(request)) {
+      for await (const report of asReports(chunk)) {
+        const normalised = normaliseAttributeReport(report);
+        if (normalised) found.push(normalised);
+      }
+    }
+    return found;
+  }
+
+  private async readOptionalFacts(peer: RemotePeer): Promise<{ commissionedFabricCount: number | null; firmwareUpdateEligible: boolean | null }> {
+    try {
+      const reports = await this.collectReports(peer, [
+        { endpointId: 0, clusterId: 0x003e, attributeId: 0x0003 },
+        { endpointId: 0, clusterId: 0x002a, attributeId: 0x0001 },
+      ], "optional", 1, 0);
+      const fabrics = reports.find((report) => report.kind === "value" && report.clusterId === 0x003e && report.attributeId === 0x0003);
+      const update = reports.find((report) => report.kind === "value" && report.clusterId === 0x002a && report.attributeId === 0x0001);
+      return {
+        commissionedFabricCount: numberOrNull(fabrics?.value),
+        firmwareUpdateEligible: typeof update?.value === "boolean" ? update.value : null,
+      };
+    } catch {
+      return { commissionedFabricCount: null, firmwareUpdateEligible: null };
+    }
+  }
+
   private find(matterNodeId: string): RemotePeer {
     const peer = this.node.peers.commissioned.find((item) => idText(item.peerAddress?.nodeId) === matterNodeId);
     if (!peer) throw new MatterOperationError("connection_failed", "That node is not on the IoT.Edu management fabric.");
     return peer;
   }
 
-  private async describe(peer: RemotePeer, attemptSession: boolean): Promise<ObservedNode> {
+  private async describe(peer: RemotePeer, attemptSession: boolean, options?: { forceStart?: boolean; timeoutMs?: number }): Promise<ObservedNode> {
+    const timeoutMs = options?.timeoutMs ?? 100_000;
     const matterNodeId = idText(peer.peerAddress?.nodeId);
     if (!matterNodeId) {
       throw new MatterOperationError("connection_failed", "The controller did not receive a Matter node id. No node record was stored.");
@@ -247,52 +498,47 @@ class MatterJsTransport implements ManagementTransport {
     if (!attemptSession) {
       return emptyObservation(matterNodeId, "commissioned");
     }
-    try {
-      await withTimeout(peer.start(), 20_000, "CASE session");
-      const facts = await withTimeout(peer.act("management-read", async (agent) => readAdministrative(agent)), 20_000, "Administrative read");
-      return {
-        matterNodeId,
-        ...facts,
-        connection: peer.lifecycle.isConnected === false ? "offline" : "reachable",
-        lastCommunicationAt: new Date().toISOString(),
-      };
-    } catch (error) {
-      if (error instanceof MatterOperationError && error.code === "fabric_limit") throw error;
-      return {
-        ...emptyObservation(matterNodeId, "offline"),
-        connection: "offline",
-        lastCommunicationAt: null,
-      };
+    const started = Date.now();
+    if (options?.forceStart || peer.lifecycle.isOnline !== true) {
+      try {
+        await withTimeout(peer.start(), 20_000, "Stored peer preparation");
+      } catch (error) {
+        throw classifyIdentityThrown(error, {
+          stageHint: "locate_peer",
+          sessionOnline: false,
+          matterNodeId,
+          elapsedMs: Date.now() - started,
+          attempts: 1,
+          phase: "prepare",
+        });
+      }
     }
-  }
-}
-
-function readAdministrative(agent: Record<string, unknown>): ObservedFacts {
-  const basic = clusterState(agent, "basicInformation");
-  const credentials = clusterState(agent, "operationalCredentials");
-  const requestor = clusterState(agent, "otaSoftwareUpdateRequestor");
-  const updatePossible = requestor ? booleanOrNull(requestor.updatePossible) : null;
-  return {
-    vendorId: numberOrNull(basic?.vendorId),
-    productId: numberOrNull(basic?.productId),
-    hardwareVersion: numberOrNull(basic?.hardwareVersion),
-    hardwareVersionString: stringOrNull(basic?.hardwareVersionString),
-    softwareVersion: numberOrNull(basic?.softwareVersion),
-    softwareVersionString: stringOrNull(basic?.softwareVersionString),
-    commissionedFabricCount: numberOrNull(credentials?.commissionedFabrics),
-    firmwareUpdateEligible: updatePossible,
-  };
-}
-
-function clusterState(agent: Record<string, unknown>, name: string): Record<string, unknown> | null {
-  try {
-    const cluster = agent[name];
-    if (!cluster || typeof cluster !== "object") return null;
-    const state = (cluster as { state?: unknown }).state;
-    if (!state || typeof state !== "object") return null;
-    return state as Record<string, unknown>;
-  } catch {
-    return null;
+    let facts: ObservedFacts;
+    try {
+      facts = await withTimeout(this.readFacts(peer, matterNodeId), timeoutMs, "Operational reconnect");
+    } catch (error) {
+      throw classifyIdentityThrown(error, {
+        stageHint: sessionReady(peer) ? "read_basic_information" : "discover_operational",
+        sessionOnline: sessionReady(peer),
+        matterNodeId,
+        elapsedMs: Date.now() - started,
+        attempts: 1,
+        phase: "read",
+        storedAddress: hasStoredAddress(peer),
+      });
+    }
+    if (facts.softwareVersion == null) {
+      throw new MatterOperationError(
+        "identity_read_failed",
+        "Basic Information was read, but SoftwareVersion was absent. SerialNumber is optional and was not required. No node record was stored.",
+      );
+    }
+    return {
+      matterNodeId,
+      ...facts,
+      connection: "reachable",
+      lastCommunicationAt: new Date().toISOString(),
+    };
   }
 }
 
@@ -305,6 +551,7 @@ function emptyObservation(matterNodeId: string, connection: ObservedNode["connec
     hardwareVersionString: null,
     softwareVersion: null,
     softwareVersionString: null,
+    serialNumber: null,
     commissionedFabricCount: null,
     firmwareUpdateEligible: null,
     connection,
@@ -312,19 +559,37 @@ function emptyObservation(matterNodeId: string, connection: ObservedNode["connec
   };
 }
 
-function mapCommissionError(error: unknown): MatterOperationError {
+export function mapCommissionError(error: unknown): MatterOperationError {
   if (error instanceof MatterOperationError) return error;
   const message = safeMessage(error);
   if (/fabric/i.test(message) && /(full|limit|no space|too many|busy)/i.test(message)) {
     return new MatterOperationError(
       "fabric_limit",
-      "The device cannot accept another fabric. IoT.Edu did not factory reset it. An existing administrator can remove a fabric or open a new commissioning window.",
+      "The device cannot accept another fabric. IoT.Edu did not factory reset it and did not remove the Apple Home fabric. An existing administrator can remove a different fabric or open a new commissioning window.",
     );
   }
-  if (/not found|timeout|discover|no device|mdns/i.test(message)) {
-    return new MatterOperationError("discovery_failed", `The device was not discovered on the existing network. ${message}`);
+  if (/not found|discover|no device|mdns/i.test(message)) {
+    return new MatterOperationError(
+      "discovery_failed",
+      `The device was not discovered on the local network. ${message} Open pairing mode in Apple Home again. IoT.Edu did not change the Apple Home fabric or the Thread dataset.`,
+    );
   }
-  return new MatterOperationError("connection_failed", `Commissioning did not finish. ${message} The node was not factory reset.`);
+  if (/\bcase\b/i.test(message)) {
+    return new MatterOperationError(
+      "connection_failed",
+      `The operational CASE session was not established. ${message} No node record is stored unless Basic Information is read. Open pairing mode again if the window closed. IoT.Edu did not remove the Apple Home fabric.`,
+    );
+  }
+  if (/expir|commissioning window|pase|passcode|timeout/i.test(message)) {
+    return new MatterOperationError(
+      "commissioning_window_expired",
+      `The Apple Home pairing code expired or the commissioning window closed. ${message} In the Home app, turn pairing mode on again and paste the new code. Do not factory-reset the accessory.`,
+    );
+  }
+  return new MatterOperationError(
+    "connection_failed",
+    `Commissioning did not finish. ${message} The accessory was not factory reset, and the Apple Home fabric was not removed.`,
+  );
 }
 
 function safeMessage(error: unknown): string {
@@ -363,19 +628,14 @@ function idText(value: unknown): string | null {
 function numberOrNull(value: unknown): number | null {
   if (typeof value === "bigint") return Number(value);
   if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value && typeof value === "object" && "value" in value) {
+    return numberOrNull((value as { value: unknown }).value);
+  }
   if (value && typeof value === "object" && "valueOf" in value) {
-    const numeric = Number(value.valueOf());
-    return Number.isFinite(numeric) ? numeric : null;
+    const primitive = value.valueOf();
+    if (primitive !== value) return numberOrNull(primitive);
   }
   return null;
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function booleanOrNull(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
 }
 
 async function storageHasKeys(directory: string): Promise<boolean> {
@@ -387,6 +647,26 @@ async function storageHasKeys(directory: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
+}
+
+function hasStoredAddress(peer: RemotePeer): boolean {
+  return Array.isArray(peer.state?.commissioning?.addresses) && peer.state.commissioning.addresses.length > 0;
+}
+
+function sessionReady(peer: RemotePeer): boolean {
+  return peer.lifecycle.isOnline === true || peer.lifecycle.isConnected === true;
+}
+
+async function* asReports(chunk: unknown): AsyncIterable<unknown> {
+  if (chunk && typeof chunk === "object" && Symbol.asyncIterator in chunk) {
+    yield* chunk as AsyncIterable<unknown>;
+    return;
+  }
+  if (Array.isArray(chunk)) {
+    for (const report of chunk) yield report;
+    return;
+  }
+  if (chunk != null) yield chunk;
 }
 
 function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {

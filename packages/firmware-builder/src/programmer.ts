@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BuildJob, ProgramSession, StartupCheck, ValidationIssue } from "@iotedu/contracts";
 import type { PartitionRow } from "./index.js";
@@ -58,12 +59,98 @@ export interface UsbRunnerSpec {
   signal: AbortSignal;
   onLog: (line: string) => void;
   timeoutMs?: number;
+  exitGraceMs?: number;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface UsbRunnerResult {
   ok: boolean;
   cancelled: boolean;
+  timedOut?: boolean;
   diagnostic: string | null;
+}
+
+export const FLASH_VERIFIED_BOOT_UNSEEN =
+  "Unable to verify firmware boot. Flash contents were verified, but no application startup was observed.";
+
+export const INSTALL_SUCCEEDED_COMMISSIONING_NOT_PERFORMED =
+  "Firmware installation succeeded. Matter commissioning has not yet been performed.";
+
+export const FLASH_RESULT_UNKNOWN =
+  "Flash verification timed out. The result is unknown. Review the diagnostic log before retrying.";
+
+export const DOWNLOAD_MODE_CAPTURE =
+  "The console shows ROM download mode. Application startup was not observed. Flash was not rewritten.";
+
+export const SILENT_CONSOLE_CAPTURE =
+  "No application output was captured. A silent console is not proof that the firmware crashed. Flash was not rewritten.";
+
+export const BOOT_FAILED_CAPTURE =
+  "Firmware boot failed. The console showed a panic or repeated resets. Flash was not rewritten.";
+
+export const PORT_REAPPEAR_FAILED =
+  "The USB port did not reappear after the application reset. Reconnect the cable and retry boot verification. Flash was not rewritten.";
+
+export const BOOTLOADER_ONLY_CAPTURE =
+  "The bootloader started from SPI flash. Application startup was not captured. Flash was not rewritten.";
+
+export const APPLICATION_LISTEN_GRACE_MS = 4_000;
+
+export function applicationBootSeen(monitorLog: string): boolean {
+  return /cpu_start:|Calling app_main|App version:|App "sensors"|Extended colour light endpoint|Failed to prepare the Matter core|Failed to register the RGB|Failed to start Matter|Failed to create the extended/i.test(monitorLog);
+}
+
+export function bootloaderStarted(monitorLog: string): boolean {
+  return /ESP-ROM:esp32h2|2nd stage bootloader|SPI_FAST_FLASH_BOOT/i.test(monitorLog);
+}
+
+export function bootListenSettled(monitorLog: string, applicationSeenAt: number | null, now: number): { seenAt: number | null; settled: boolean } {
+  if (/Guru Meditation|panic'ed|abort\(\)/i.test(monitorLog) || (monitorLog.match(/Rebooting\.\.\./gi)?.length ?? 0) >= 3) {
+    return { seenAt: applicationSeenAt, settled: true };
+  }
+  if (/waiting for download|DOWNLOAD_BOOT/i.test(monitorLog) && !/SPI_FAST_FLASH_BOOT/i.test(monitorLog)) {
+    return { seenAt: applicationSeenAt, settled: true };
+  }
+  if (!applicationBootSeen(monitorLog)) return { seenAt: applicationSeenAt, settled: false };
+  const seenAt = applicationSeenAt ?? now;
+  if (/Failed to start Matter|Failed to register the RGB light|Failed to prepare the Matter core|Failed to init server/i.test(monitorLog)) {
+    return { seenAt, settled: true };
+  }
+  if (/Fabric already commissioned|Existing Matter fabric count/i.test(monitorLog)) return { seenAt, settled: true };
+  if (/SetupQRCode:/i.test(monitorLog) && /Manual pairing code:/i.test(monitorLog)) return { seenAt, settled: true };
+  if (/Server Listening|CHIPoBLE advertising started|Commissioning window opened/i.test(monitorLog)) {
+    return { seenAt, settled: now - seenAt >= 800 };
+  }
+  // OpenThread and chip[DL] run before Server::Init. Stopping there drops the fabric, window, and onboarding lines.
+  return { seenAt, settled: now - seenAt >= APPLICATION_LISTEN_GRACE_MS };
+}
+
+export function firmwareConsole(sdkconfig: string): {
+  primary: "uart0" | "usb-serial-jtag" | "none";
+  usbSerialJtagOutput: boolean;
+  uart0Output: boolean;
+} {
+  const none = /^CONFIG_ESP_CONSOLE_NONE=y$/m.test(sdkconfig);
+  const usbPrimary = /^CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y$/m.test(sdkconfig);
+  const uartDefault = /^CONFIG_ESP_CONSOLE_UART_DEFAULT=y$/m.test(sdkconfig) || /^CONFIG_ESP_CONSOLE_UART_CUSTOM=y$/m.test(sdkconfig);
+  const usbSecondary = /^CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y$/m.test(sdkconfig);
+  return {
+    primary: none ? "none" : usbPrimary ? "usb-serial-jtag" : "uart0",
+    usbSerialJtagOutput: !none && (usbPrimary || usbSecondary),
+    uart0Output: !none && uartDefault,
+  };
+}
+
+export function bootCaptureMessage(monitorLog: string): string | null {
+  if (/Guru Meditation|panic'ed|abort\(\)/i.test(monitorLog) || (monitorLog.match(/Rebooting\.\.\./gi)?.length ?? 0) >= 3) {
+    return BOOT_FAILED_CAPTURE;
+  }
+  if (applicationBootSeen(monitorLog)) return null;
+  if (/waiting for download|DOWNLOAD_BOOT/i.test(monitorLog) && !/SPI_FAST_FLASH_BOOT/i.test(monitorLog)) return DOWNLOAD_MODE_CAPTURE;
+  if (bootloaderStarted(monitorLog)) return BOOTLOADER_ONLY_CAPTURE;
+  const lines = monitorLog.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("note:"));
+  if (lines.length === 0) return SILENT_CONSOLE_CAPTURE;
+  return null;
 }
 
 export function isAllowedSerialPort(port: string): boolean {
@@ -144,35 +231,121 @@ export function writeDiagnostic(text: string, timedOut: boolean): string {
   return "The write failed. The log has the USB tool output. Flash contents were not reported as verified.";
 }
 
+const FLASH_IMAGE_NAMES: Record<number, string> = {
+  0x0: "bootloader.bin",
+  0xc000: "partition-table.bin",
+  0x1d000: "ota_data_initial.bin",
+  0x20000: "sensors.bin",
+};
+
+export interface ParsedFlashImage {
+  label: string;
+  offset: number;
+  bytes: number | null;
+  hashVerified: boolean;
+  seconds: number | null;
+}
+
+export function parseFlashImages(log: string): ParsedFlashImage[] {
+  const images: ParsedFlashImage[] = [];
+  const pattern = /Wrote (\d+) bytes \([^)]*\) at (0x[0-9a-f]+) in ([0-9.]+) seconds/gi;
+  for (const match of log.matchAll(pattern)) {
+    const bytes = Number(match[1]);
+    const offset = Number.parseInt(match[2] ?? "", 16);
+    const seconds = Number(match[3]);
+    const after = log.slice((match.index ?? 0) + match[0].length, (match.index ?? 0) + match[0].length + 160);
+    images.push({
+      label: FLASH_IMAGE_NAMES[offset] ?? "Not Verified",
+      offset,
+      bytes: Number.isInteger(bytes) ? bytes : null,
+      hashVerified: /Hash of data verified/i.test(after),
+      seconds: Number.isFinite(seconds) ? seconds : null,
+    });
+  }
+  return images;
+}
+
 export function redactSerialLog(text: string): string {
   return text
+    .replace(/https?:\/\/\S*qrcode\.html\?\S+/gi, "[redacted]")
+    .replace(/MT%3A[A-Z0-9.%_-]+/gi, "[redacted]")
     .replace(/MT:[A-Z0-9.-]+/gi, "[redacted]")
+    .replace(/Manual pairing code:\s*\[[0-9-]+\]/gi, "Manual pairing code: [redacted]")
     .replace(/\b\d{4}-\d{3}-\d{4}\b/g, "[redacted]")
     .replace(
-      /(passcode|pincode|pin code|discriminator|setup pin|spake2p|salt|verifier|private key)\s*[:=]\s*\S+/gi,
+      /(passcode|pincode|pin code|setup pin|spake2p|salt|verifier|private key)\s*[:=]\s*\S+/gi,
       "$1: [redacted]",
     );
+}
+
+/** SHA256 of the application ELF stored in an ESP-IDF app descriptor. The discriminator is not in this value. */
+export function readAppElfSha256(binary: Uint8Array): string | null {
+  const magic = Buffer.from([0x32, 0x54, 0xcd, 0xab]);
+  const bytes = Buffer.from(binary);
+  let offset = bytes.indexOf(magic);
+  while (offset >= 0 && offset + 176 <= bytes.length) {
+    const version = bytes.subarray(offset + 16, offset + 48).toString("utf8").split("\0")[0] ?? "";
+    if (/^\d+\.\d+\.\d+$/.test(version)) return bytes.subarray(offset + 144, offset + 176).toString("hex");
+    offset = bytes.indexOf(magic, offset + 1);
+  }
+  return null;
 }
 
 export function chipProbeAccepted(exitCode: number, output: string): boolean {
   return exitCode === 0 && /ESP32-H2/i.test(output);
 }
 
+export function chipConnectionFailure(text: string): "no_serial_data" | "port_unavailable" | "wrong_chip" | null {
+  if (/No serial data received|Failed to connect/i.test(text)) return "no_serial_data";
+  if (/could not open port|Resource busy|Device not configured|No such file or directory/i.test(text)) return "port_unavailable";
+  if (/Wrong chip|Unexpected chip|This chip is|not an ESP32-H2/i.test(text)) return "wrong_chip";
+  return null;
+}
+
 export async function probeChip(
-  spec: { repoRoot: string; port: string; signal?: AbortSignal },
+  spec: { repoRoot: string; port: string; signal?: AbortSignal; env?: NodeJS.ProcessEnv; includeFlashSize?: boolean },
   executor?: ToolExecutor,
-): Promise<{ accepted: boolean; text: string }> {
+): Promise<{ accepted: boolean; text: string; failure: ReturnType<typeof chipConnectionFailure> }> {
   if (!isAllowedSerialPort(spec.port)) {
-    return { accepted: false, text: "The serial port is not an allowed local USB device." };
+    return { accepted: false, failure: "port_unavailable", text: "The serial port is not an allowed local USB device." };
   }
-  const tool = executor ?? defaultExecutor(path.join(spec.repoRoot, "scripts/idf_exec.sh"));
+  const tool = executor ?? defaultExecutor(path.join(spec.repoRoot, "scripts/idf_exec.sh"), spec.env);
   const controller = new AbortController();
-  const probe = await runTimed(tool, ["chip-id", spec.port], spec.signal ?? controller.signal, () => undefined, 20_000);
-  const text = redactSerialLog(probe.text).trim();
+  const signal = spec.signal ?? controller.signal;
+  const probe = await runTimed(tool, ["chip-id", spec.port], signal, () => undefined, 45_000);
+  let text = redactSerialLog(probe.text).trim();
   if (probe.timedOut) {
-    return { accepted: false, text: text || "The chip probe timed out before the board answered." };
+    return { accepted: false, failure: "no_serial_data", text: text || "The chip probe timed out before the board answered." };
   }
-  return { accepted: chipProbeAccepted(probe.code, text), text };
+  const accepted = chipProbeAccepted(probe.code, text);
+  if (accepted && spec.includeFlashSize) {
+    const flash = await runTimed(tool, ["flash-id", spec.port, "--stay"], signal, () => undefined, 45_000);
+    if (flash.code === 0) text = `${text}\n${redactSerialLog(flash.text)}`.trim();
+    else if (chipConnectionFailure(flash.text) === "no_serial_data") {
+      return { accepted: false, failure: "no_serial_data", text: `${text}\n${redactSerialLog(flash.text)}`.trim() };
+    }
+  }
+  return { accepted, failure: accepted ? null : chipConnectionFailure(text), text };
+}
+
+export async function verifyProgrammingTools(repoRoot: string, env: NodeJS.ProcessEnv): Promise<{ ok: boolean; detail: string }> {
+  const tool = defaultExecutor(path.join(repoRoot, "scripts/idf_exec.sh"), env);
+  try {
+    const result = await runTimed(tool, ["tool-check"], new AbortController().signal, () => undefined, 30_000);
+    const version = result.text.trim().split(/\s+/).pop() ?? "";
+    if (result.code === 0 && version) {
+      return { ok: true, detail: `ESP-IDF v5.4.1 programming tools are ready (version ${version}). A chip probe can identify an ESP32-H2 without a manual export.` };
+    }
+    return {
+      ok: false,
+      detail: "ESP-IDF v5.4.1 was found, but esptool did not start. The programming environment is not activated. This is not a missing USB device.",
+    };
+  } catch {
+    return {
+      ok: false,
+      detail: "ESP-IDF v5.4.1 was found, but the programming tools could not be started. This is not a missing USB device.",
+    };
+  }
 }
 
 function issue(code: string, message: string): ValidationIssue {
@@ -383,12 +556,14 @@ export function startupChecks(input: {
   const monitorLines = input.monitorLog.split(/\r?\n/).filter((line) => line && !line.startsWith("note:"));
   const disconnected = monitorLines.some((line) => /could not open port|Device not configured|No such file or directory/i.test(line));
   const deviceLines = monitorLines.filter((line) => !/could not open port|Device not configured|No such file or directory/i.test(line));
-  const versionMatch = input.monitorLog.match(/App "sensors" version (\S+)/);
+  const versionMatch = input.monitorLog.match(/App version:\s*(\S+)/) ?? input.monitorLog.match(/App "sensors" version:?\s*(\S+)/);
   const panic = /Guru Meditation|panic'ed|abort\(\)/i.test(input.monitorLog);
   const reboots = input.monitorLog.match(/Rebooting\.\.\./gi)?.length ?? 0;
-  const bootSeen = /ESP-ROM:esp32h2|boot: ESP-IDF|App "sensors"/i.test(input.monitorLog);
-  const matterFailed = /Failed to start Matter|Failed to create Matter node/.test(input.monitorLog);
-  const matterSeen = /CHIP task running|CHIP:DL|chip\[DL\]/.test(input.monitorLog);
+  const bootSeen = applicationBootSeen(input.monitorLog);
+  const bootloader = bootloaderStarted(input.monitorLog);
+  const matterFailed = /Failed to start Matter|Failed to create Matter node|Failed to prepare the Matter core|Failed to register the RGB light|Failed to init server/.test(input.monitorLog);
+  const matterServer = /Server Listening|Fabric already commissioned|Existing Matter fabric count|SetupQRCode:|CHIPoBLE advertising started|Commissioning window opened/i.test(input.monitorLog);
+  const matterStack = /CHIP task running|CHIP:DL|chip\[DL\]/.test(input.monitorLog);
   const threadFailed = /Failed to initialize OpenThread|OpenThread start failed/i.test(input.monitorLog);
   const threadSeen = /OpenThread|esp_openthread|OPENTHREAD/.test(input.monitorLog);
   const dhtFailed = /Failed to initialize DHT11/.test(input.monitorLog);
@@ -404,7 +579,7 @@ export function startupChecks(input: {
     ? { id: "serial", label: "Confirm serial communication", status: "passed", detail: "Serial bytes were received. This does not confirm Matter commissioning." }
     : disconnected
       ? { id: "serial", label: "Confirm serial communication", status: "failed", detail: "The serial port closed or could not be opened." }
-      : { id: "serial", label: "Confirm serial communication", status: "unknown", detail: "Open the serial monitor after writing to capture startup text." };
+      : { id: "serial", label: "Confirm serial communication", status: "unknown", detail: "Startup text has not been captured. Retry boot verification from Setup. A separate serial monitor is not required." };
 
   const write: StartupCheck = input.writeStatus === "succeeded"
     ? { id: "write", label: "Flash compiled firmware", status: "passed", detail: "The image was written. NVS was not erased. Startup is a separate check." }
@@ -415,14 +590,18 @@ export function startupChecks(input: {
   const boot: StartupCheck = panic || reboots >= 3
     ? { id: "boot", label: "Confirm successful boot", status: "failed", detail: "The serial log contains a panic, abort, or repeated reboots." }
     : bootSeen
-      ? { id: "boot", label: "Confirm successful boot", status: "passed", detail: "The ROM or application banner was seen, with no panic in this capture. Commissioning is not inferred." }
-      : { id: "boot", label: "Confirm successful boot", status: "unknown", detail: "No ESP32-H2 boot banner has been captured." };
+      ? { id: "boot", label: "Confirm successful boot", status: "passed", detail: "Application startup was captured. A ROM banner alone is not this result. Commissioning is not inferred." }
+      : bootloader
+        ? { id: "boot", label: "Confirm successful boot", status: "unknown", detail: "The ROM and second-stage bootloader started from SPI flash. The application log was not in this capture." }
+        : { id: "boot", label: "Confirm successful boot", status: "unknown", detail: "No ESP32-H2 application startup has been captured." };
 
   const matter: StartupCheck = matterFailed
-    ? { id: "matter", label: "Confirm Matter startup", status: "failed", detail: "The firmware logged a Matter startup failure." }
-    : matterSeen
-      ? { id: "matter", label: "Confirm Matter startup", status: "passed", detail: "A Matter stack line was seen. The node has not been commissioned from this check." }
-      : { id: "matter", label: "Confirm Matter startup", status: "unknown", detail: "Matter startup was not observed." };
+    ? { id: "matter", label: "Confirm Matter startup", status: "failed", detail: /Failed to register the RGB light/.test(input.monitorLog) ? "The application stopped while registering the RGB light, before Matter started. This is not a BLE or fabric result." : "The firmware logged a Matter startup failure." }
+    : matterServer
+      ? { id: "matter", label: "Confirm Matter startup", status: "passed", detail: "The Matter server reported listening, a stored fabric, or an onboarding code. Commissioning is a separate result." }
+      : matterStack
+        ? { id: "matter", label: "Confirm Matter startup", status: "unknown", detail: "The Matter stack started. This capture ended before the server reported listening, a fabric, or an onboarding code." }
+        : { id: "matter", label: "Confirm Matter startup", status: "unknown", detail: "Not yet performed. A USB installation does not wait for Matter commissioning." };
 
   const thread: StartupCheck = threadFailed
     ? { id: "openthread", label: "Confirm OpenThread startup", status: "failed", detail: "OpenThread logged a failure." }
@@ -452,7 +631,28 @@ export function startupChecks(input: {
   return [connect, serial, write, boot, matter, thread, dht, version, factory];
 }
 
-function defaultExecutor(script: string): ToolExecutor {
+const COMMISSIONING_EVIDENCE = ["boot", "matter", "openthread", "version"] as const;
+
+export function installationSummary(checks: StartupCheck[], writeStatus: ProgramSession["status"]): string | null {
+  if (writeStatus === "failed" || writeStatus === "interrupted") return "Firmware Installation Failed.";
+  if (writeStatus !== "succeeded") return null;
+  const required = COMMISSIONING_EVIDENCE.map((id) => checks.find((item) => item.id === id)?.status);
+  if (required.every((item) => item === "passed")) return "Firmware Installed and Verified.";
+  if (required.some((item) => item === "failed")) return "Firmware Installed — Verification Failed.";
+  const boot = checks.find((item) => item.id === "boot")?.status;
+  if (boot === "passed") return INSTALL_SUCCEEDED_COMMISSIONING_NOT_PERFORMED;
+  return FLASH_VERIFIED_BOOT_UNSEEN;
+}
+
+export function bootEvidenceReady(checks: StartupCheck[]): boolean {
+  const boot = checks.find((item) => item.id === "boot")?.status;
+  if (boot === "passed" || boot === "failed") return true;
+  const summary = installationSummary(checks, "succeeded");
+  return summary === "Firmware Installed and Verified."
+    || summary === "Firmware Installed — Verification Failed.";
+}
+
+function defaultExecutor(script: string, baseEnv: NodeJS.ProcessEnv = process.env): ToolExecutor {
   return {
     run(args, signal, onLog) {
       return new Promise((resolve, reject) => {
@@ -460,7 +660,7 @@ function defaultExecutor(script: string): ToolExecutor {
           resolve({ code: 1, text: "", cancelled: true });
           return;
         }
-        const child = spawn(script, args, { detached: true, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(script, args, { detached: true, env: baseEnv, stdio: ["ignore", "pipe", "pipe"] });
         let cancelled = false;
         let text = "";
         const onAbort = () => {
@@ -503,21 +703,31 @@ async function runTimed(
   signal: AbortSignal,
   onLog: (line: string) => void,
   timeoutMs: number,
+  exitGraceMs = 5_000,
 ): Promise<ToolRun & { timedOut: boolean }> {
   const local = new AbortController();
   const onParent = () => local.abort();
   if (signal.aborted) local.abort();
   else signal.addEventListener("abort", onParent);
   let timedOut = false;
+  let grace: ReturnType<typeof setTimeout> | undefined;
+  let lostResolve: (result: ToolRun) => void = () => undefined;
+  const lostExit = new Promise<ToolRun>((resolve) => {
+    lostResolve = resolve;
+  });
   const timer = setTimeout(() => {
     timedOut = true;
     local.abort();
+    grace = setTimeout(() => {
+      lostResolve({ code: 1, text: "note: the USB tool did not report an exit", cancelled: true });
+    }, exitGraceMs);
   }, timeoutMs);
   try {
-    const result = await executor.run(args, local.signal, onLog);
+    const result = await Promise.race([executor.run(args, local.signal, onLog), lostExit]);
     return { ...result, timedOut: timedOut && !signal.aborted };
   } finally {
     clearTimeout(timer);
+    if (grace) clearTimeout(grace);
     signal.removeEventListener("abort", onParent);
   }
 }
@@ -529,18 +739,20 @@ export async function runUsbWrite(spec: UsbRunnerSpec, executor?: ToolExecutor):
   if (spec.writeArgs[0] !== "write-flash" || spec.writeArgs.some(forbiddenToken) || spec.writeArgs.some((arg) => arg.endsWith("usb-image.bin"))) {
     return { ok: false, cancelled: false, diagnostic: "The write command was rejected before it started." };
   }
-  const tool = executor ?? defaultExecutor(path.join(spec.repoRoot, "scripts/idf_exec.sh"));
+  const tool = executor ?? defaultExecutor(path.join(spec.repoRoot, "scripts/idf_exec.sh"), spec.env);
   const timeoutMs = spec.timeoutMs ?? 180_000;
   try {
-    const probe = await runTimed(tool, ["chip-id", spec.port], spec.signal, spec.onLog, timeoutMs);
-    if (probe.timedOut) return { ok: false, cancelled: false, diagnostic: writeDiagnostic(probe.text, true) };
+    const probe = await runTimed(tool, ["chip-id", spec.port], spec.signal, spec.onLog, timeoutMs, spec.exitGraceMs);
+    if (probe.timedOut) {
+      return { ok: false, cancelled: false, timedOut: true, diagnostic: "The board did not answer the chip probe. The firmware was not written." };
+    }
     if (probe.cancelled || spec.signal.aborted) return { ok: false, cancelled: true, diagnostic: null };
     if (!chipProbeAccepted(probe.code, probe.text)) {
       return { ok: false, cancelled: false, diagnostic: writeDiagnostic(probe.text, false) };
     }
     spec.onLog("note: ESP32-H2 responded. Writing the bootloader, partition table, OTA selection data, and application. NVS is not erased.");
-    const wrote = await runTimed(tool, spec.writeArgs, spec.signal, spec.onLog, timeoutMs);
-    if (wrote.timedOut) return { ok: false, cancelled: false, diagnostic: writeDiagnostic(wrote.text, true) };
+    const wrote = await runTimed(tool, spec.writeArgs, spec.signal, spec.onLog, timeoutMs, spec.exitGraceMs);
+    if (wrote.timedOut) return { ok: false, cancelled: false, timedOut: true, diagnostic: FLASH_RESULT_UNKNOWN };
     if (wrote.cancelled || spec.signal.aborted) return { ok: false, cancelled: true, diagnostic: null };
     if (wrote.code !== 0) return { ok: false, cancelled: false, diagnostic: writeDiagnostic(wrote.text, false) };
     return { ok: true, cancelled: false, diagnostic: null };
@@ -550,15 +762,34 @@ export async function runUsbWrite(spec: UsbRunnerSpec, executor?: ToolExecutor):
   }
 }
 
+export async function runApplicationReset(
+  spec: { repoRoot: string; port: string; signal?: AbortSignal; env?: NodeJS.ProcessEnv },
+): Promise<{ ok: boolean; detail: string }> {
+  if (!isAllowedSerialPort(spec.port)) return { ok: false, detail: "The programming port is not an allowed local USB device." };
+  const script = path.join(spec.repoRoot, "scripts/idf_exec.sh");
+  const executor = defaultExecutor(script, spec.env);
+  const signal = spec.signal ?? new AbortController().signal;
+  try {
+    const result = await runTimed(executor, ["app-reset", spec.port], signal, () => undefined, 25_000);
+    if (result.cancelled) return { ok: false, detail: "The application reset was cancelled." };
+    if (result.timedOut || result.code !== 0) {
+      return { ok: false, detail: "The automatic reset did not finish. Press the board RESET button once. Do not hold BOOT." };
+    }
+    return { ok: true, detail: "The application was reset. Flash was not erased." };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : "The application reset did not start." };
+  }
+}
+
 export async function runSerialMonitor(
-  spec: { repoRoot: string; port: string; signal: AbortSignal; onLog: (line: string) => void },
+  spec: { repoRoot: string; port: string; signal: AbortSignal; onLog: (line: string) => void; env?: NodeJS.ProcessEnv },
   executor?: ToolExecutor,
 ): Promise<{ cancelled: boolean; code: number }> {
   if (!isAllowedSerialPort(spec.port)) {
     spec.onLog("could not open port: rejected port");
     return { cancelled: false, code: 1 };
   }
-  const tool = executor ?? defaultExecutor(path.join(spec.repoRoot, "scripts/idf_exec.sh"));
+  const tool = executor ?? defaultExecutor(path.join(spec.repoRoot, "scripts/idf_exec.sh"), spec.env);
   try {
     const result = await tool.run(["monitor", spec.port, "115200"], spec.signal, spec.onLog);
     return { cancelled: result.cancelled || spec.signal.aborted, code: result.code };
@@ -566,4 +797,59 @@ export async function runSerialMonitor(
     spec.onLog(error instanceof Error ? error.message : "could not open port");
     return { cancelled: false, code: 1 };
   }
+}
+
+export interface FlashIo {
+  chip(port: string): Promise<{ code: number; text: string }>;
+  flash(port: string): Promise<{ code: number; text: string }>;
+  security(port: string): Promise<{ code: number; text: string }>;
+  read(port: string, offset: number, size: number): Promise<Buffer>;
+  erase(port: string): Promise<{ code: number; text: string; cancelled: boolean }>;
+}
+
+export function createFlashIo(repoRoot: string, env: NodeJS.ProcessEnv = process.env): FlashIo {
+  const script = path.join(repoRoot, "scripts/idf_exec.sh");
+  async function command(args: string[], timeoutMs: number): Promise<ToolRun & { timedOut: boolean }> {
+    return runTimed(defaultExecutor(script, env), args, new AbortController().signal, () => undefined, timeoutMs);
+  }
+  return {
+    async chip(port) {
+      const result = await command(["chip-id", port], 45_000);
+      return { code: result.timedOut ? 1 : result.code, text: redactSerialLog(result.text) };
+    },
+    async flash(port) {
+      const result = await command(["flash-id", port, "--stay"], 45_000);
+      return { code: result.timedOut ? 1 : result.code, text: redactSerialLog(result.text) };
+    },
+    async security(port) {
+      const result = await command(["security-info", port], 30_000);
+      return { code: result.timedOut ? 1 : result.code, text: result.text };
+    },
+    async read(port, offset, size) {
+      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size <= 0 || size > 0x1000000) {
+        throw new Error("The flash read range was rejected.");
+      }
+      const directory = await mkdtemp(path.join(tmpdir(), "iotedu-read-"));
+      const output = path.join(directory, "region.bin");
+      try {
+        const result = await command([
+          "read-flash",
+          port,
+          `0x${offset.toString(16)}`,
+          `0x${size.toString(16)}`,
+          output,
+        ], size > 0x10000 ? 180_000 : 40_000);
+        if (result.code !== 0 || result.timedOut) throw new Error("The flash read failed.");
+        const bytes = await readFile(output);
+        if (bytes.length !== size) throw new Error("The flash read length did not match the request.");
+        return bytes;
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    async erase(port) {
+      const result = await command(["erase-flash", port, "--confirm-blank"], 120_000);
+      return { code: result.timedOut ? 1 : result.code, text: redactSerialLog(result.text), cancelled: result.cancelled };
+    },
+  };
 }

@@ -33,6 +33,7 @@ interface ProviderEndpoint {
 
 interface BdxSessionLike {
   peerAddress?: { nodeId?: unknown };
+  progressInfo?: { on(listener: (bytesTransferred: number, totalBytesLength: number | undefined) => void): unknown };
   progressFinished?: { on(listener: () => void): unknown };
   progressCancelled?: { on(listener: () => void): unknown };
 }
@@ -56,6 +57,7 @@ export async function attachOtaProvider(node: ProviderNode): Promise<AttachedOta
   const { BdxProtocol, DclOtaUpdateService, PeerAddress } = await import("@matter/protocol");
   const endpoint = await node.add(OtaProviderEndpoint, { id: "ota-provider" });
   const listeners = new Set<(event: OtaProviderEvent) => void>();
+  const progressBytes = new Map<string, number>();
   const emit = (event: OtaProviderEvent) => {
     for (const listener of listeners) listener(event);
   };
@@ -86,6 +88,20 @@ export async function attachOtaProvider(node: ProviderNode): Promise<AttachedOta
     const matterNodeId = nodeIdText(session.peerAddress?.nodeId);
     if (!matterNodeId) return;
     emit({ type: "bdx-start", matterNodeId, detail: "A BDX session started for this node." });
+    session.progressInfo?.on((bytesTransferred, totalBytesLength) => {
+      const previous = progressBytes.get(matterNodeId) ?? -1;
+      const total = typeof totalBytesLength === "number" ? totalBytesLength : null;
+      const finished = total != null && bytesTransferred >= total;
+      if (!finished && bytesTransferred - previous < 4096) return;
+      progressBytes.set(matterNodeId, bytesTransferred);
+      emit({
+        type: "bdx-progress",
+        matterNodeId,
+        bytesTransferred,
+        totalBytes: total,
+        detail: total == null ? `${bytesTransferred} bytes transferred.` : `${bytesTransferred} of ${total} bytes transferred.`,
+      });
+    });
     session.progressFinished?.on(() => {
       emit({ type: "bdx-complete", matterNodeId, detail: "The BDX session reported that the offered byte count was transferred. The installed SoftwareVersion has not been read." });
     });
@@ -100,6 +116,7 @@ export async function attachOtaProvider(node: ProviderNode): Promise<AttachedOta
       endpointNumber: endpoint.number,
       fabricScoped: true,
       ledgerOffline: process.env.MATTER_DCL_OFFLINE === "true",
+      architecture: "controller-node-endpoint" as const,
     }),
     subscribe(listener) {
       listeners.add(listener);

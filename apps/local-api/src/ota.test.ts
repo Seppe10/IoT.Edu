@@ -152,6 +152,63 @@ describe("Matter OTA provider jobs", () => {
     const stored = await readFile(path.join(dataDir, "ota-jobs.json"), "utf8");
     expect(stored).not.toMatch(/MT:|passcode|PRIVATE KEY|rootKey/);
   });
+
+  it("does not treat a stored SoftwareVersion or a mismatched hash as ready", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iotedu-ota-offline-"));
+    const profile = await readBoardProfile(repoRoot);
+    const layout = await loadReferenceLayout(repoRoot, profile);
+    const provider = new ScriptedProvider(new MemoryNodeRepository());
+    const image = encodeMatterOtaImage({ vendorId: 0xfff1, productId: 0x8000, softwareVersion: 3, softwareVersionString: "1.2.0" });
+    await mkdir(path.join(dataDir, "builds", "build-ok", "artifacts"), { recursive: true });
+    await writeFile(path.join(dataDir, "builds", "build-ok", "artifacts", "sensors.ota"), image);
+    const now = new Date().toISOString();
+    await writeFile(path.join(dataDir, "nodes.json"), JSON.stringify([{
+      id: "node-1",
+      name: "Bench",
+      simulated: false,
+      matterNodeId: "42",
+      vendorId: 0xfff1,
+      productId: 0x8000,
+      softwareVersion: 2,
+      softwareVersionString: "1.1.0",
+      hardware: "ESP32-H2",
+      reachable: false,
+      connection: "offline",
+      firmwareUpdateEligible: true,
+      fabricLabel: "IoT.Edu Management",
+      commissionedFabricCount: 2,
+      otherFabricCount: 1,
+      partitionLayoutId: layout.layoutId,
+      installedComponents: [],
+      history: [],
+      createdAt: now,
+      updatedAt: now,
+    }]));
+    const record = buildRecord("build-ok", 3, image.length, false);
+    const artifact = record.artifacts[0];
+    if (!artifact) throw new Error("The test package has no artifact.");
+    artifact.sha256 = "0".repeat(64);
+    await writeFile(path.join(dataDir, "builds.json"), JSON.stringify([record]));
+    const app = await buildApp({
+      dataDir,
+      repoRoot,
+      catalogDir: path.join(repoRoot, "catalog/manifests"),
+      profile,
+      nativeAvailable: false,
+      matter: provider as unknown as MatterManagementService,
+    });
+    closers.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/ota/preflight",
+      payload: { nodeId: "node-1", buildId: "build-ok", artifactName: "sensors.ota", userApproved: true, confirm: true },
+    });
+    const body = response.json();
+    expect(body.allowed).toBe(false);
+    expect(body.checks.find((check: { id: string }) => check.id === "installed_version").readiness).toBe("not_checked");
+    expect(body.checks.find((check: { id: string }) => check.id === "artifact_hash").readiness).toBe("check_failed");
+    expect(body.checks.find((check: { id: string }) => check.id === "ota_requestor").readiness).toBe("not_checked");
+  });
 });
 
 function buildRecord(id: string, softwareVersion: number, size: number, simulated: boolean) {

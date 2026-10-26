@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,14 +7,22 @@ import { describe, expect, it } from "vitest";
 import { loadReferenceLayout, type BoardProfile } from "./index.js";
 import {
   buildWritePlan,
+  chipConnectionFailure,
   chipProbeAccepted,
   filterSerialPortNames,
   flashProgressPercent,
   isAllowedSerialPort,
   packageProgrammingBlock,
+  parseFlashImages,
+  readAppElfSha256,
   redactSerialLog,
   probeChip,
   runUsbWrite,
+  applicationBootSeen,
+  bootCaptureMessage,
+  bootListenSettled,
+  firmwareConsole,
+  installationSummary,
   startupChecks,
   writeDiagnostic,
   type FlashArguments,
@@ -155,6 +163,14 @@ describe("USB programmer", () => {
     expect(plan.args).toContain(path.join(dir, "sensors.bin"));
   });
 
+  it("reinstalls firmware while preserving NVS and does not claim commissioning was cleared", async () => {
+    const { plan } = await samplePlan();
+    expect(plan.ok).toBe(true);
+    expect(plan.args.some((arg) => /erase/i.test(arg))).toBe(false);
+    expect(plan.args).not.toContain("0x10000");
+    expect(plan.issues.map((item) => item.message).join(" ")).not.toMatch(/commissioning|factory reset|nvs erased/i);
+  });
+
   it("rejects an erase flag, an NVS overlap, and a merged image that does not match", async () => {
     const { plan } = await samplePlan();
     expect(plan.ok).toBe(true);
@@ -220,10 +236,43 @@ describe("USB programmer", () => {
   });
 
   it("redacts pairing material and does not treat a sensor line as commissioning", () => {
-    const redacted = redactSerialLog("payload MT:Y.ABCDEF passcode: 12345678 manual 3497-011-2332");
+    const raw = "Advertise commission parameter vendorID=65521 productID=32768 discriminator=3840/00 passcode: 20202021";
+    const redacted = redactSerialLog(`payload MT:Y.ABCDEF ${raw} manual 3497-011-2332`);
     expect(redacted).not.toContain("MT:Y");
-    expect(redacted).not.toContain("12345678");
+    expect(redacted).not.toContain("20202021");
+    expect(redacted).toContain("discriminator=3840/00");
     expect(redacted).not.toContain("3497-011-2332");
+    expect(redacted).toContain("passcode: [redacted]");
+    const url = redactSerialLog("https://project-chip.github.io/connectedhomeip/qrcode.html?data=MT%3AY.ABCDEF");
+    expect(url).not.toContain("MT%3A");
+    expect(url).not.toContain("qrcode.html?data");
+    const image = Buffer.alloc(176, 0);
+    image.writeUInt32LE(0xabcd5432, 0);
+    image.write("1.3.0", 16, "utf8");
+    const digest = Buffer.alloc(32, 0xab);
+    digest[0] = 0xa4;
+    digest.write("a4a5dcfd", 0, "hex");
+    digest.copy(image, 144);
+    expect(readAppElfSha256(image)).toBe(digest.toString("hex"));
+    expect(readAppElfSha256(Buffer.from("not an image"))).toBeNull();
+
+    const images = parseFlashImages([
+      "Wrote 21696 bytes (13414 compressed) at 0x00000000 in 0.2 seconds (effective 933.1 kbit/s)...",
+      "Hash of data verified.",
+      "Wrote 3072 bytes (181 compressed) at 0x0000c000 in 0.0 seconds (effective 1179.7 kbit/s)...",
+      "Hash of data verified.",
+      "Wrote 8192 bytes (31 compressed) at 0x0001d000 in 0.0 seconds (effective 1564.6 kbit/s)...",
+      "Hash of data verified.",
+      "Wrote 1592800 bytes (961211 compressed) at 0x00020000 in 6.8 seconds (effective 1869.0 kbit/s)...",
+      "Hash of data verified.",
+    ].join("\n"));
+    expect(images.map((image) => [image.label, image.offset, image.bytes, image.hashVerified])).toEqual([
+      ["bootloader.bin", 0, 21696, true],
+      ["partition-table.bin", 0xc000, 3072, true],
+      ["ota_data_initial.bin", 0x1d000, 8192, true],
+      ["sensors.bin", 0x20000, 1592800, true],
+    ]);
+    expect(parseFlashImages("Wrote 100 bytes (10 compressed) at 0x00000000 in 0.1 seconds\n").every((image) => image.hashVerified)).toBe(false);
 
     const checks = startupChecks({
       writeLog: "note: ESP32-H2 responded",
@@ -250,6 +299,51 @@ describe("USB programmer", () => {
     });
     expect(other.find((item) => item.id === "version")?.status).toBe("failed");
     expect(other.find((item) => item.id === "boot")?.status).toBe("failed");
+
+    const device = startupChecks({
+      writeLog: "Hash of data verified.",
+      monitorLog: [
+        "ESP-ROM:esp32h2-20221101",
+        "I (28) cpu_start: App version:      1.3.0",
+        "I (900) chip[DL]: OpenThread started: OK",
+        "I (1200) chip[DL]: CHIP task running",
+        "I (3200) DHT11: DHT11 Temperature: 24°C, Humidity: 51%RH",
+      ].join("\n"),
+      versionString: "1.3.0",
+      writeStatus: "succeeded",
+    });
+    expect(device.find((item) => item.id === "boot")?.status).toBe("passed");
+    expect(device.find((item) => item.id === "version")?.status).toBe("passed");
+    expect(device.find((item) => item.id === "matter")?.status).toBe("unknown");
+    expect(device.find((item) => item.id === "openthread")?.status).toBe("passed");
+    expect(device.find((item) => item.id === "dht11")?.status).toBe("passed");
+    expect(installationSummary(device, "succeeded")).toBe("Firmware installation succeeded. Matter commissioning has not yet been performed.");
+    expect(installationSummary(checks, "succeeded")).toBe("Firmware installation succeeded. Matter commissioning has not yet been performed.");
+    expect(installationSummary(other, "succeeded")).toBe("Firmware Installed — Verification Failed.");
+    expect(installationSummary(device, "failed")).toBe("Firmware Installation Failed.");
+    const matterFailed = startupChecks({
+      writeLog: "",
+      monitorLog: "App version: 1.3.0\nFailed to start Matter, err:1\nOpenThread started",
+      versionString: "1.3.0",
+      writeStatus: "succeeded",
+    });
+    expect(matterFailed.find((item) => item.id === "matter")?.status).toBe("failed");
+    expect(installationSummary(matterFailed, "succeeded")).toBe("Firmware Installed — Verification Failed.");
+    const withoutSensor = startupChecks({
+      writeLog: "Hash of data verified.",
+      monitorLog: "ESP-ROM:esp32h2-20221101\nI (28) cpu_start: App version:      1.3.0\nI (900) chip[DL]: OpenThread started: OK\nI (1400) chip[DL]: Server Listening...",
+      versionString: "1.3.0",
+      writeStatus: "succeeded",
+    });
+    expect(withoutSensor.find((item) => item.id === "dht11")?.status).toBe("unknown");
+    expect(installationSummary(withoutSensor, "succeeded")).toBe("Firmware Installed and Verified.");
+    const listening = startupChecks({
+      writeLog: "",
+      monitorLog: "I (1400) chip[DL]: Server Listening...",
+      versionString: "1.3.0",
+      writeStatus: "succeeded",
+    });
+    expect(listening.find((item) => item.id === "matter")?.status).toBe("passed");
   });
 
   it("stops after a failed chip probe and still refuses an erase command", async () => {
@@ -322,7 +416,60 @@ describe("USB programmer", () => {
     }, hanging);
     expect(timed.ok).toBe(false);
     expect(timed.cancelled).toBe(false);
-    expect(timed.diagnostic).toMatch(/timed out/);
+    expect(timed.timedOut).toBe(true);
+    expect(timed.diagnostic).toBe("The board did not answer the chip probe. The firmware was not written.");
+  });
+
+  it("records an unknown result when the USB tool never reports an exit and does not start another write", async () => {
+    const calls: string[][] = [];
+    const executor: ToolExecutor = {
+      run(args) {
+        calls.push(args);
+        if (args[0] === "chip-id") return Promise.resolve({ code: 0, text: "Chip is ESP32-H2", cancelled: false });
+        return new Promise(() => undefined);
+      },
+    };
+    const timed = await runUsbWrite({
+      repoRoot,
+      port: "/dev/cu.usbmodem1101",
+      writeArgs: ["write-flash", "--port", "/dev/cu.usbmodem1101", "write_flash", "0x20000", "/tmp/sensors.bin"],
+      signal: new AbortController().signal,
+      onLog: () => undefined,
+      timeoutMs: 20,
+      exitGraceMs: 20,
+    }, executor);
+    expect(timed.ok).toBe(false);
+    expect(timed.timedOut).toBe(true);
+    expect(timed.diagnostic).toBe("Flash verification timed out. The result is unknown. Review the diagnostic log before retrying.");
+    expect(calls.map((args) => args[0])).toEqual(["chip-id", "write-flash"]);
+  });
+
+  it("rejects a busy or missing port and a hash mismatch without treating either as a verified write", async () => {
+    const busy = await runUsbWrite({
+      repoRoot,
+      port: "/tmp/not-a-port",
+      writeArgs: ["write-flash", "write_flash"],
+      signal: new AbortController().signal,
+      onLog: () => undefined,
+    });
+    expect(busy.ok).toBe(false);
+    expect(busy.diagnostic).toMatch(/not an allowed local USB device/);
+
+    const mismatch = await runUsbWrite({
+      repoRoot,
+      port: "/dev/cu.usbmodem1101",
+      writeArgs: ["write-flash", "write_flash", "0x20000", "/tmp/sensors.bin"],
+      signal: new AbortController().signal,
+      onLog: () => undefined,
+    }, {
+      async run(args) {
+        if (args[0] === "chip-id") return { code: 0, text: "Chip is ESP32-H2", cancelled: false };
+        return { code: 2, text: "Hash of data verified failed\nVerify failed", cancelled: false };
+      },
+    });
+    expect(mismatch.ok).toBe(false);
+    expect(mismatch.timedOut).toBeUndefined();
+    expect(mismatch.diagnostic).toMatch(/not reported as verified/);
   });
 
   it("keeps a higher version distinct in the startup record", () => {
@@ -343,6 +490,47 @@ describe("USB programmer", () => {
     expect(first.find((item) => item.id === "version")?.detail).not.toContain("1.2.0");
   });
 
+  it("reads identity in ROM download mode and hard-resets only to start the application", async () => {
+    const script = await readFile(path.join(repoRoot, "scripts/idf_exec.sh"), "utf8");
+    const chip = script.slice(script.indexOf("chip-id)"), script.indexOf("flash-id)"));
+    expect(chip).toContain("--before usb_reset");
+    expect(chip).toContain("--after no_reset chip_id");
+    const reset = script.slice(script.indexOf("app-reset)"), script.indexOf("monitor)"));
+    expect(reset).toContain("--after hard_reset run");
+    expect(reset).not.toMatch(/erase_flash|erase-flash/);
+    const uart = firmwareConsole("CONFIG_ESP_CONSOLE_UART_DEFAULT=y\n# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set\n# CONFIG_ESP_CONSOLE_SECONDARY_NONE is not set\n");
+    expect(uart).toMatchObject({ primary: "uart0", usbSerialJtagOutput: false, uart0Output: true });
+    const shared = firmwareConsole("CONFIG_ESP_CONSOLE_UART_DEFAULT=y\n# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set\nCONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y\n");
+    expect(shared).toMatchObject({ primary: "uart0", usbSerialJtagOutput: true, uart0Output: true });
+    const usb = firmwareConsole("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y\n");
+    expect(usb).toMatchObject({ primary: "usb-serial-jtag", usbSerialJtagOutput: true, uart0Output: false });
+    expect(bootCaptureMessage("")).toMatch(/silent console/);
+    expect(bootCaptureMessage("waiting for download")).toMatch(/ROM download mode/);
+    expect(bootCaptureMessage("ESP-ROM:esp32h2-eco5-20240613\nI (23) boot: ESP-IDF v5.4.1 2nd stage bootloader\nboot:0xc (SPI_FAST_FLASH_BOOT)")).toMatch(/bootloader started/i);
+    expect(bootCaptureMessage("Guru Meditation Error: Core 0 panic'ed")).toMatch(/panic or repeated resets/);
+    expect(bootCaptureMessage('App "sensors" version: 1.6.0')).toBeNull();
+    const rom = "ESP-ROM:esp32h2-eco5-20240613\nI (23) boot: ESP-IDF v5.4.1 2nd stage bootloader";
+    expect(applicationBootSeen(rom)).toBe(false);
+    expect(bootListenSettled(rom, null, 1_000).settled).toBe(false);
+    const started = `${rom}\nI (80) cpu_start: Calling app_main()\nI (90) app_main: Extended colour light endpoint 1`;
+    expect(applicationBootSeen(started)).toBe(true);
+    expect(bootListenSettled(started, 1_000, 1_100).settled).toBe(false);
+    expect(bootListenSettled(`${started}\nCHIP task running\nOpenThread started`, 1_000, 1_100).settled).toBe(false);
+    expect(bootListenSettled(`${started}\nCHIP task running\nOpenThread started`, 1_000, 5_100).settled).toBe(true);
+    expect(bootListenSettled(`${started}\nServer Listening...\nSetupQRCode: [MT:Y.K9042C00KA0648G00]\nManual pairing code: [34970112332]`, 1_000, 1_100).settled).toBe(true);
+    const romOnly = startupChecks({ writeLog: "Hash of data verified.", monitorLog: rom, versionString: "1.6.0", writeStatus: "succeeded" });
+    expect(romOnly.find((item) => item.id === "boot")?.status).toBe("unknown");
+    const app = startupChecks({ writeLog: "Hash of data verified.", monitorLog: started, versionString: "1.6.0", writeStatus: "succeeded" });
+    expect(app.find((item) => item.id === "boot")?.status).toBe("passed");
+    expect(app.find((item) => item.id === "version")?.status).toBe("unknown");
+    const stopped = `${started}\nI (552) app_init: App version:      1.6.0\nE (657) app_main: Failed to register the RGB light, err:261`;
+    const failed = startupChecks({ writeLog: "Hash of data verified.", monitorLog: stopped, versionString: "1.6.0", writeStatus: "succeeded" });
+    expect(failed.find((item) => item.id === "boot")?.status).toBe("passed");
+    expect(failed.find((item) => item.id === "version")?.status).toBe("passed");
+    expect(failed.find((item) => item.id === "matter")?.status).toBe("failed");
+    expect(failed.find((item) => item.id === "openthread")?.status).toBe("unknown");
+  });
+
   it("identifies an ESP32-H2 without starting a flash write", async () => {
     const calls: string[][] = [];
     const executor: ToolExecutor = {
@@ -354,6 +542,25 @@ describe("USB programmer", () => {
     const result = await probeChip({ repoRoot, port: "/dev/cu.usbmodem101" }, executor);
     expect(result.accepted).toBe(true);
     expect(calls).toEqual([["chip-id", "/dev/cu.usbmodem101"]]);
+    expect(chipConnectionFailure("A fatal error occurred: Failed to connect to ESP32-H2: No serial data received.")).toBe("no_serial_data");
+    expect(chipConnectionFailure("Chip is ESP32-H2")).toBeNull();
+  });
+
+  it("reads flash size only after the chip answers, without resetting again", async () => {
+    const calls: string[][] = [];
+    const executor: ToolExecutor = {
+      async run(args) {
+        calls.push(args);
+        return { code: 0, text: args[0] === "chip-id" ? "Chip is ESP32-H2\n" : "Detected flash size: 4MB\n", cancelled: false };
+      },
+    };
+    const result = await probeChip({ repoRoot, port: "/dev/cu.usbmodem101", includeFlashSize: true }, executor);
+    expect(result.accepted).toBe(true);
+    expect(result.failure).toBeNull();
+    expect(calls).toEqual([
+      ["chip-id", "/dev/cu.usbmodem101"],
+      ["flash-id", "/dev/cu.usbmodem101", "--stay"],
+    ]);
   });
 
   it("rejects a probe that does not report ESP32-H2 and does not write", async () => {

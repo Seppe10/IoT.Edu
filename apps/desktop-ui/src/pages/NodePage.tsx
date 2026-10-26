@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { CommissioningWindowResult, ManagedNode, RefreshResult } from "@iotedu/contracts";
 import { ApiError, api } from "../api";
+import { formatLocalDateTime } from "../datetime";
+import { presenceLabel } from "../setup";
 
 export function identityRow(label: string, value: string | number | null | undefined) {
   if (value == null || value === "") return null;
@@ -9,11 +11,8 @@ export function identityRow(label: string, value: string | number | null | undef
 }
 
 function connectionText(node: ManagedNode): string | null {
-  if (node.connection === "reachable" || node.reachable === true) return "Reachable";
-  if (node.connection === "offline" || node.reachable === false) return "Offline";
-  if (node.connection === "commissioned") return "Commissioned";
-  if (node.connection === "unknown" || node.reachable == null) return node.simulated ? null : "Unknown";
-  return null;
+  if (node.simulated && !node.presence) return "Simulated";
+  return presenceLabel(node);
 }
 
 function eligibilityText(value: boolean | null | undefined): string | null {
@@ -97,7 +96,11 @@ export function NodePage() {
               {identityRow("Management fabric ID", node.managementFabricId)}
               {identityRow("Commissioned fabric count", node.commissionedFabricCount)}
               {identityRow("Management connection", connectionText(node))}
-              {identityRow("Last successful communication", node.lastCommunicationAt)}
+              {identityRow("Last successful communication", formatLocalDateTime(node.lastSuccessfulCommunicationAt ?? node.lastCommunicationAt))}
+              {identityRow("Last failed communication", formatLocalDateTime(node.lastFailedCommunicationAt))}
+              {identityRow("Recorded", formatLocalDateTime(node.createdAt))}
+              {identityRow("Last updated", formatLocalDateTime(node.updatedAt))}
+              {identityRow("Reachability error", node.reachabilityError)}
               {identityRow("Firmware update eligibility", eligibilityText(node.firmwareUpdateEligible))}
               {identityRow("Partition layout", node.partitionLayoutId)}
               {node.installedComponents.length > 0 && identityRow("Installed components", node.installedComponents.join(", "))}
@@ -117,8 +120,9 @@ export function NodePage() {
       <div className="panel">
         <h2>History</h2>
         <ul>
+          {node.history.length === 0 && <p>Not yet recorded</p>}
           {node.history.map((entry) => (
-            <li key={`${entry.at}-${entry.kind}`}>{entry.at} — {entry.kind}: {entry.detail}</li>
+            <li key={`${entry.at}-${entry.kind}`}>{formatLocalDateTime(entry.at)} — {entry.kind}: {entry.detail}</li>
           ))}
         </ul>
       </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { CapabilityReport, ControllerStatus } from "@iotedu/contracts";
-import { ApiError, api } from "../api";
+import type { CapabilityReport } from "@iotedu/contracts";
+import { api } from "../api";
 
 interface Settings {
   applicationVersion: string;
@@ -13,42 +13,34 @@ interface Settings {
   dockerProbed: boolean;
   controllerIdentityLoaded: boolean;
   fabricLabel: string;
+  reachabilityIntervalMs?: number;
+  reachabilityFreshnessMs?: number;
   notes: string[];
 }
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [controller, setController] = useState<ControllerStatus | null>(null);
   const [caps, setCaps] = useState<CapabilityReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [intervalMs, setIntervalMs] = useState("30000");
+  const [storage, setStorage] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
       api<Settings>("/api/settings"),
-      api<ControllerStatus>("/api/controller/status"),
       api<CapabilityReport>("/api/capabilities"),
-    ]).then(([settingsBody, controllerBody, capabilityBody]) => {
+    ]).then(([settingsBody, capabilityBody]) => {
+      api<{ configured: boolean; databaseBytes?: number; limitBytes?: number; percent?: number; level?: string; message?: string }>("/api/catalogue/storage")
+        .then((body) => setStorage(body.configured && body.databaseBytes != null && body.limitBytes != null
+          ? `Catalogue database ${Math.round(body.databaseBytes / 1024 / 1024)} MB of ${Math.round(body.limitBytes / 1024 / 1024)} MB (${body.percent}%, ${body.level}). ${body.message ?? ""}`
+          : body.message ?? "The Neon catalogue is not configured."))
+        .catch(() => setStorage("Catalogue storage could not be measured."));
       setSettings(settingsBody);
-      setController(controllerBody);
       setCaps(capabilityBody);
+      if (settingsBody.reachabilityIntervalMs) setIntervalMs(String(settingsBody.reachabilityIntervalMs));
     }).catch((reason: Error) => setError(reason.message));
   }, []);
-
-  async function createIdentity() {
-    setError(null);
-    try {
-      const status = await api<ControllerStatus>("/api/controller/identity", {
-        method: "POST",
-        body: JSON.stringify({ confirm: true }),
-      });
-      setController(status);
-      setNotice(status.message);
-      if (settings) setSettings({ ...settings, controllerIdentityLoaded: status.identityLoaded, fabricLabel: status.fabricLabel });
-    } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : "The management identity was not created.");
-    }
-  }
 
   return (
     <section className="stack">
@@ -73,19 +65,27 @@ export function SettingsPage() {
               <tr><th scope="row">Data directory</th><td>{settings.dataDir}</td></tr>
               <tr><th scope="row">Fabric label</th><td>{settings.fabricLabel}</td></tr>
               <tr><th scope="row">Controller identity</th><td>{settings.controllerIdentityLoaded ? "Loaded" : "Not loaded"}</td></tr>
+              <tr><th scope="row">Reachability interval</th><td>{settings.reachabilityIntervalMs ? `${settings.reachabilityIntervalMs / 1000} seconds` : "Not reported"}</td></tr>
+              <tr><th scope="row">Freshness window</th><td>{settings.reachabilityFreshnessMs ? `${settings.reachabilityFreshnessMs / 1000} seconds` : "Not reported"}</td></tr>
             </tbody>
           </table>
+          <form className="row" onSubmit={(event) => {
+            event.preventDefault();
+            void api<{ intervalMs: number; freshnessMs: number }>("/api/reachability/interval", {
+              method: "POST",
+              body: JSON.stringify({ intervalMs: Number(intervalMs) }),
+            }).then((body) => {
+              setSettings({ ...settings, reachabilityIntervalMs: body.intervalMs, reachabilityFreshnessMs: body.freshnessMs });
+              setNotice(`Reachability checks run every ${body.intervalMs / 1000} seconds.`);
+            }).catch((reason: Error) => setError(reason.message));
+          }}>
+            <label>
+              Monitoring interval (ms)
+              <input value={intervalMs} onChange={(event) => setIntervalMs(event.target.value)} inputMode="numeric" />
+            </label>
+            <button type="submit">Save interval</button>
+          </form>
           <ul>{settings.notes.map((note) => <li key={note}>{note}</li>)}</ul>
-        </div>
-      )}
-      {controller && (
-        <div className="banner">
-          <p>{controller.message}</p>
-          {controller.matterJsVersion && <p>Matter.js {controller.matterJsVersion}. Credential id {controller.credentialId ?? "not stored"}. Fabric id {controller.fabricId ?? "assigned when the first node joins"}.</p>}
-          {caps?.matterCommissioning !== "mock_only" && !controller.identityLoaded && controller.regenerationBlocked && !controller.persisted && (
-            <button type="button" onClick={() => void createIdentity()}>Create management identity</button>
-          )}
-          <p>{controller.backup}</p>
         </div>
       )}
       {caps && (
@@ -101,15 +101,9 @@ export function SettingsPage() {
               <tr><th scope="row">OTA Provider</th><td>{caps.otaProvider}</td></tr>
               <tr><th scope="row">USB flashing</th><td>{caps.usbFlash}</td></tr>
               <tr><th scope="row">AI</th><td>{caps.ai}</td></tr>
+              {storage && <tr><th scope="row">Catalogue storage</th><td>{storage}</td></tr>}
             </tbody>
           </table>
-          <h2>Recovery</h2>
-          <ul>
-            {caps.notes.map((note) => <li key={note}>{note}</li>)}
-            <li>Losing this application’s fabric does not by itself require a factory reset if another administrator can reopen commissioning.</li>
-            <li>Factory reset is a last resort and is not offered as a button here.</li>
-            <li>Source notes are in the repository docs. Development VID 0xFFF1 and PID 0x8000 are prototype identifiers.</li>
-          </ul>
         </div>
       )}
     </section>
